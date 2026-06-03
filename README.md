@@ -1,16 +1,17 @@
 # odds-compare
 
-Hourly job that compares sports odds between **vegas.hu** and **tippmixpro.hu**, finds the biggest implied-probability gaps for matches starting **between 2 hours and 7 days from now**, and posts the top N to a Discord channel.
+On-demand job that compares sports odds between **vegas.hu** and **tippmixpro.hu**, finds 2-leg arbitrage opportunities for matches starting **between 2 hours and 7 days from now**, and posts the top N (with stake split) to a Discord channel.
 
 ## What lives where
 
-| Piece              | Where                                                       |
-|--------------------|-------------------------------------------------------------|
-| Source code        | this repo                                                   |
-| Cron + execution   | GitHub Actions, hourly                                      |
-| Hungarian exit IP  | NordVPN (HU server) via the official `nordvpn` Linux CLI    |
-| Alert sink         | Discord webhook                                             |
-| Team-name fixes    | `data/overrides.json` (HU country names → English canonical) |
+| Piece              | Where                                                                 |
+|--------------------|-----------------------------------------------------------------------|
+| Source code        | this repo                                                             |
+| Execution          | GitHub Actions, triggered manually or via `/arbs` Discord slash command |
+| Discord trigger    | Cloudflare Worker (free tier) — see `discord-bot/SETUP.md`            |
+| Hungarian exit IP  | NordVPN (HU server) via the official `nordvpn` Linux CLI              |
+| Alert sink         | Discord webhook                                                       |
+| Team-name fixes    | `data/overrides.json` (HU country names → English canonical)          |
 
 ## How each side is fetched
 

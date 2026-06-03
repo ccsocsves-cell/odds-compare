@@ -1,9 +1,11 @@
 name: Hourly odds comparison
 
 on:
-  schedule:
-    - cron: '0 * * * *'   # hourly, on the hour UTC
   workflow_dispatch:
+  # Triggered remotely by the Discord bot (discord-bot/worker.js) via
+  # POST /repos/{owner}/{repo}/dispatches with event_type=run-arbs.
+  repository_dispatch:
+    types: [run-arbs]
 
 jobs:
   compare:

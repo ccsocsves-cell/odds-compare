@@ -1,0 +1,9 @@
+name = "odds-compare-bot"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+# All secrets set via `wrangler secret put <NAME>` after first deploy:
+#   DISCORD_PUBLIC_KEY   - from Discord Developer Portal -> your App -> General Information -> Public Key
+#   GITHUB_TOKEN         - PAT with `repo` scope (Settings -> Developer settings -> Personal access tokens)
+#   GITHUB_REPO          - e.g. "ccsocsves-cell/odds-compare"
+#   ALLOWED_USER_ID      - your Discord user ID (right-click yourself in Discord -> Copy User ID, requires Developer Mode in settings)
