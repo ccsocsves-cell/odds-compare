@@ -3,8 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { canonicalMarketKey, canonicalSelection } from '../normalize/markets.js';
 
-// Altenar API endpoint that vegas.hu calls under the hood (discovered via the
-// diagnostic spike in src/diag.js). No Playwright needed.
+// Altenar API endpoint that vegas.hu calls under the hood. GetUpcoming gives
+// us the full upcoming-events list with multiple market types per event
+// (1x2, Total/OU, GG/NG/BTTS, etc.), unlike GetTopEvents which only returned
+// ~24 featured events with the main market.
 const BASE = 'https://hu-sb2frontend-altenar2.biahosted.com/api/widget';
 const COMMON = {
   culture: 'en-GB',
@@ -14,8 +16,9 @@ const COMMON = {
   numFormat: 'hu-HU',
   countryCode: 'HU'
 };
-// Major sport IDs (from data/samples/ topSports payloads):
-// 66=Football, 67=Basketball, 68=Tennis, 70=Ice Hockey, 69=Volleyball, 71=Boxing, 146=E-Football
+// Major sport IDs:
+// 66=Football, 67=Basketball, 68=Tennis, 70=Ice Hockey, 69=Volleyball,
+// 71=Boxing, 146=E-Football
 const SPORT_IDS = [66, 67, 68, 70, 69, 71, 146];
 const SAMPLE_DIR = 'data/samples';
 const SAVE_SAMPLES = process.env.SAVE_SAMPLES === '1';
@@ -31,9 +34,10 @@ export async function scrapeVegas() {
 }
 
 async function fetchSport(sportId) {
-  // GetTopEvents with eventCount=0 returns the full list, not the top N.
+  // GetUpcoming with eventCount=0 returns ALL upcoming events for the sport
+  // (vs GetTopEvents which returns only ~10 featured per sport with 1 market).
   const params = { ...COMMON, eventCount: '0', sportId: String(sportId), timePeriod: '0' };
-  const url = `${BASE}/GetTopEvents`;
+  const url = `${BASE}/GetUpcoming`;
   const res = await axios.get(url, {
     params,
     timeout: 30000,
@@ -51,7 +55,7 @@ async function fetchSport(sportId) {
   if (SAVE_SAMPLES) {
     fs.mkdirSync(SAMPLE_DIR, { recursive: true });
     fs.writeFileSync(
-      path.join(SAMPLE_DIR, `vegas-direct-sport${sportId}.json`),
+      path.join(SAMPLE_DIR, `vegas-upcoming-sport${sportId}.json`),
       JSON.stringify(res.data, null, 2)
     );
   }
@@ -103,7 +107,7 @@ function parseAltenarEvent(e, lookups) {
   for (const marketId of e.marketIds || []) {
     const market = marketById.get(marketId);
     if (!market) continue;
-    const key = canonicalMarketKey(market.name || market.headerName);
+    const key = mapAltenarMarket(market);
     if (!key) continue;
     const odds = {};
     for (const oddId of market.oddIds || []) {
@@ -130,18 +134,61 @@ function parseAltenarEvent(e, lookups) {
   };
 }
 
+// Map an Altenar market record to one of our canonical keys.
+// Handles parenthetical variants like "Winner (incl. OT)", "Total (incl. OT
+// and penalties)", "Total games", "Total points". For Total, also checks the
+// market's `sv` (selected value = line) and only keeps the 2.5 line for our
+// ou_2.5 canonical market.
+function mapAltenarMarket(market) {
+  const name = (market.name || market.headerName || '').toLowerCase();
+  if (!name) return null;
+
+  if (name === '1x2' || name.startsWith('1x2')) return '1x2';
+  if (name.startsWith('winner')) return 'winner';
+  if (name === 'gg/ng' || name.startsWith('gg/ng')) return 'btts';
+
+  // Totals: name starts with "total" - filter to the 2.5 line for our
+  // canonical ou_2.5 (football). For other sports the "natural" total is
+  // way different (basketball ~210 pts), so 2.5 only triggers on football.
+  if (name.startsWith('total')) {
+    const line = Number(market.sv);
+    if (Number.isFinite(line) && Math.abs(line - 2.5) < 0.01) return 'ou_2.5';
+    return null;
+  }
+
+  // fall back to the existing Hungarian alias table
+  return canonicalMarketKey(market.name || market.headerName);
+}
+
 function mapAltenarSelection(marketKey, odd, homeCompId, awayCompId) {
   const compId = odd.competitorId;
+  const rawName = (odd.name || '').trim();
+  const lower = rawName.toLowerCase();
+
   if (marketKey === '1x2') {
     if (compId === homeCompId) return '1';
     if (compId === awayCompId) return '2';
-    const n = (odd.name || '').toLowerCase().trim();
-    if (n === 'x' || n === 'draw' || n === 'döntetlen') return 'X';
+    if (lower === 'x' || lower === 'draw' || lower === 'döntetlen') return 'X';
+    // Altenar 1x2 typeId: 1=Home, 2=Draw, 3=Away
+    if (odd.typeId === 2) return 'X';
     return null;
   }
   if (marketKey === 'winner') {
     if (compId === homeCompId) return '1';
     if (compId === awayCompId) return '2';
+    return null;
+  }
+  if (marketKey === 'btts') {
+    // Altenar uses "GG"=both score, "NG"=not both score
+    if (lower === 'gg' || lower.startsWith('yes') || lower === 'igen') return 'yes';
+    if (lower === 'ng' || lower.startsWith('no') || lower === 'nem') return 'no';
+    return null;
+  }
+  if (marketKey === 'ou_2.5') {
+    // Names are "Over 2,5" / "Under 2,5" (Hungarian comma decimal). Also
+    // accept Altenar's typeId where 12=Over, 13=Under for the standard total.
+    if (/^over/i.test(rawName) || odd.typeId === 12) return 'over';
+    if (/^under/i.test(rawName) || odd.typeId === 13) return 'under';
     return null;
   }
   return canonicalSelection(marketKey, odd.name);
