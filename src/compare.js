@@ -40,11 +40,9 @@ function arbsBetween(vEvent, tEvent) {
     if (!TWO_LEG_MARKETS.has(vmKey)) continue;
     const tmRaw = tEvent.markets.find(m => normalizedMarketKey(m) === vmKey);
     if (!tmRaw) continue;
-    // Use the normalized key so downstream output / near-arb diag also reads cleanly
     const vm = { key: vmKey, odds: vmRaw.odds };
     const tm = { key: vmKey, odds: tmRaw.odds };
 
-    // Must have exactly the same 2 selections quoted on both books
     const selections = [...new Set([...Object.keys(vm.odds), ...Object.keys(tm.odds)])];
     if (selections.length !== 2) continue;
     if (!selections.every(s => Number.isFinite(vm.odds[s]) && Number.isFinite(tm.odds[s]))) continue;
@@ -57,16 +55,11 @@ function arbsBetween(vEvent, tEvent) {
       ? { odds: vm.odds[selB], book: 'vegas' }
       : { odds: tm.odds[selB], book: 'tippmixpro' };
 
-    // Cross-platform requirement: each leg must be on a different book
     if (bestA.book === bestB.book) continue;
 
     const totalImplied = 1 / bestA.odds + 1 / bestB.odds;
-    if (totalImplied >= 1) continue; // no arb - bookies overround
+    if (totalImplied >= 1) continue;
 
-    // Stake split that equalizes payout across both legs:
-    //   payout = STAKE_BASE / totalImplied (same regardless of outcome)
-    //   stake_A = STAKE_BASE * (1/oA) / totalImplied
-    //   stake_B = STAKE_BASE * (1/oB) / totalImplied
     const stakeA = (STAKE_BASE * (1 / bestA.odds)) / totalImplied;
     const stakeB = (STAKE_BASE * (1 / bestB.odds)) / totalImplied;
     const guaranteedReturn = STAKE_BASE / totalImplied;
@@ -87,6 +80,40 @@ function arbsBetween(vEvent, tEvent) {
     });
   }
   return out;
+}
+
+// Per matched pair + arb-eligible market, compute the best-of-both implied
+// total. Sorted ascending so the lowest (= closest to arb) is first. Returns
+// structured rows so discord.js can format them however it wants.
+function nearArbOverview(pairs) {
+  const rows = [];
+  for (const { vegas: v, tipp: t } of pairs) {
+    for (const vmRaw of v.markets) {
+      const key = normalizedMarketKey(vmRaw);
+      if (!TWO_LEG_MARKETS.has(key)) continue;
+      const tmRaw = t.markets.find(m => normalizedMarketKey(m) === key);
+      if (!tmRaw) continue;
+      const vm = { key, odds: vmRaw.odds };
+      const tm = { key, odds: tmRaw.odds };
+      const sels = [...new Set([...Object.keys(vm.odds), ...Object.keys(tm.odds)])];
+      if (sels.length !== 2 || !sels.every(s => Number.isFinite(vm.odds[s]) && Number.isFinite(tm.odds[s]))) continue;
+      const [a, b] = sels;
+      const bestA = Math.max(vm.odds[a], tm.odds[a]);
+      const bestB = Math.max(vm.odds[b], tm.odds[b]);
+      const total = 1 / bestA + 1 / bestB;
+      rows.push({
+        total,
+        overroundPct: (total - 1) * 100,
+        market: key,
+        home: v.home,
+        away: v.away,
+        sport: v.sport,
+        startUtc: v.startUtc
+      });
+    }
+  }
+  rows.sort((x, y) => x.total - y.total);
+  return rows;
 }
 
 async function main() {
@@ -111,57 +138,30 @@ async function main() {
   const profitable = allArbs.filter(a => a.profitPct >= MIN_PROFIT_PCT);
   console.log(`  → ${profitable.length} arbs ≥ ${MIN_PROFIT_PCT}% profit; sending top ${Math.min(profitable.length, TOP_N)}`);
 
-  // Diagnostic: show what each matched pair looks like + closest arb misses.
+  const nearMisses = nearArbOverview(pairs);
+
   if (DRY || profitable.length === 0) {
-    console.log(`\n=== Matched pair market coverage ===`);
-    for (const { vegas: v, tipp: t } of pairs) {
-      const vKeys = v.markets.map(m => m.key);
-      const tKeys = t.markets.map(m => m.key);
-      const common = vKeys.filter(k => tKeys.includes(k));
-      const eligible = common.filter(k => TWO_LEG_MARKETS.has(k));
-      console.log(`  ${v.sport.padEnd(12)} ${v.home} vs ${v.away}`);
-      console.log(`    vegas: [${vKeys.join(', ')}]  tipp: [${tKeys.join(', ')}]  arb-eligible: [${eligible.join(', ') || '—'}]`);
+    console.log(`\n=== Closest book differences on eligible markets (lowest = best near-arb) ===`);
+    for (const m of nearMisses.slice(0, 10)) {
+      const start = new Date(m.startUtc).toISOString().slice(0, 16).replace('T', ' ');
+      console.log(`  overround=${m.overroundPct.toFixed(2)}%  ${m.market.padEnd(7)}  ${m.home} vs ${m.away}  [${start}]`);
     }
-    const nearMisses = nearArbOverview(pairs);
-    if (nearMisses.length) {
-      console.log(`\n=== Closest book differences on eligible markets (overround = how far from arb) ===`);
-      for (const m of nearMisses.slice(0, 10)) console.log(`  ${m}`);
-    } else {
-      console.log(`\nNo arb-eligible market pairs in this scrape (need winner / btts / ou_2.5 on both books for the same match).`);
+    if (!nearMisses.length) {
+      console.log('  (no arb-eligible market pairs)');
     }
   }
 
-  await sendDiscord(DRY ? null : process.env.DISCORD_WEBHOOK_URL, profitable.slice(0, TOP_N));
-}
-
-// Diagnostic: per matched pair + market, compute the best-of-both implied
-// total. Show the lowest (closest to 1.00 = arb threshold). Output is a list
-// of one-line summaries sorted by closeness.
-function nearArbOverview(pairs) {
-  const rows = [];
-  for (const { vegas: v, tipp: t } of pairs) {
-    for (const vmRaw of v.markets) {
-      const key = normalizedMarketKey(vmRaw);
-      if (!TWO_LEG_MARKETS.has(key)) continue;
-      const tmRaw = t.markets.find(m => normalizedMarketKey(m) === key);
-      if (!tmRaw) continue;
-      const vm = { key, odds: vmRaw.odds };
-      const tm = { key, odds: tmRaw.odds };
-      const sels = [...new Set([...Object.keys(vm.odds), ...Object.keys(tm.odds)])];
-      if (sels.length !== 2 || !sels.every(s => Number.isFinite(vm.odds[s]) && Number.isFinite(tm.odds[s]))) continue;
-      const [a, b] = sels;
-      const bestA = Math.max(vm.odds[a], tm.odds[a]);
-      const bestB = Math.max(vm.odds[b], tm.odds[b]);
-      const total = 1 / bestA + 1 / bestB;
-      const startShort = new Date(v.startUtc).toISOString().slice(0, 16).replace('T', ' ');
-      rows.push({
-        total,
-        line: `total=${total.toFixed(4)} (overround ${((total - 1) * 100).toFixed(2)}%)  ${vm.key.padEnd(7)}  ${v.home} vs ${v.away}  [${startShort}]`
-      });
+  await sendDiscord(DRY ? null : process.env.DISCORD_WEBHOOK_URL, {
+    arbs: profitable.slice(0, TOP_N),
+    summary: {
+      vegasInWindow: vegas.length,
+      tippInWindow: tipp.length,
+      pairCount: pairs.length,
+      eligibleMarketCount: nearMisses.length,
+      threshold: MIN_PROFIT_PCT,
+      closest: nearMisses[0] || null
     }
-  }
-  rows.sort((x, y) => x.total - y.total);
-  return rows.map(r => r.line);
+  });
 }
 
 main().catch(err => {

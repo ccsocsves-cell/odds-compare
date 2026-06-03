@@ -1,19 +1,18 @@
-export async function sendDiscord(webhookUrl, arbs) {
-  const lines = arbs.map(formatLine);
+// Always posts to Discord (no silent skip). When there are no arbs above
+// threshold, posts a short "scan complete" status with summary + closest
+// near-arb so the user knows the scan ran and what the market looks like.
+export async function sendDiscord(webhookUrl, { arbs, summary }) {
+  const messages = arbs.length
+    ? buildArbMessages(arbs)
+    : [buildStatusMessage(summary)];
 
   if (!webhookUrl) {
-    console.log(`\n=== Top ${arbs.length} arbitrage opportunities (dry-run; no webhook) ===`);
-    for (const line of lines) console.log(line + '\n');
-    return;
-  }
-  if (!arbs.length) {
-    console.log('No arbs above threshold; skipping Discord post.');
+    console.log(`\n=== Discord output (dry-run) ===`);
+    for (const m of messages) console.log(m + '\n---');
     return;
   }
 
-  const header = `**Top ${arbs.length} arbitrage opportunities** (vegas.hu vs tippmixpro.hu)\n`;
-  const chunks = chunkLines(header, lines, 1900);
-  for (const content of chunks) {
+  for (const content of messages) {
     const r = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -26,7 +25,29 @@ export async function sendDiscord(webhookUrl, arbs) {
   }
 }
 
-function formatLine(a) {
+function buildArbMessages(arbs) {
+  const header = `**${arbs.length} arbitrage opportunit${arbs.length === 1 ? 'y' : 'ies'}** (vegas.hu vs tippmixpro.hu)\n`;
+  const lines = arbs.map(formatArbLine);
+  return chunkLines(header, lines, 1900);
+}
+
+function buildStatusMessage(s) {
+  if (!s) return 'Scan complete — no summary available.';
+
+  let msg = `**Scan complete — no arbs above ${s.threshold}% profit threshold.**\n`;
+  msg += `> vegas: ${s.vegasInWindow} events  ·  tippmixpro: ${s.tippInWindow} events  ·  matched pairs: ${s.pairCount}\n`;
+  msg += `> arb-eligible markets checked (winner / btts / ou_2.5): ${s.eligibleMarketCount}\n`;
+
+  if (s.closest) {
+    const start = new Date(s.closest.startUtc).toISOString().slice(0, 16).replace('T', ' ');
+    msg += `\n**Closest to arb** (still profit-negative at this overround):\n`;
+    msg += `\`${start}Z\` ${s.closest.sport} · ${s.closest.home} vs ${s.closest.away}\n`;
+    msg += `  ${s.closest.market} · overround **${s.closest.overroundPct.toFixed(2)}%** (need ≤ 0% for arb)`;
+  }
+  return msg;
+}
+
+function formatArbLine(a) {
   const start = new Date(a.startUtc).toISOString().slice(0, 16).replace('T', ' ');
   const A = a.legA;
   const B = a.legB;
@@ -62,7 +83,7 @@ function chunkLines(header, lines, maxLen) {
   const chunks = [];
   let buf = header;
   for (const line of lines) {
-    if ((buf + '\n' + line).length > maxLen) {
+    if ((buf + '\n\n' + line).length > maxLen) {
       chunks.push(buf);
       buf = line;
     } else {
