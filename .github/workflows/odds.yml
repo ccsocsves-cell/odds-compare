@@ -1,4 +1,4 @@
-name: Hourly odds comparison
+name: Odds arbitrage scan
 
 on:
   workflow_dispatch:

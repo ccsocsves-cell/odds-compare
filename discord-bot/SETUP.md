@@ -18,7 +18,7 @@ GitHub Settings → Developer settings → Personal access tokens → **Fine-gra
 
 - **Resource owner**: ccsocsves-cell
 - **Repository access**: Only select repositories → `odds-compare`
-- **Permissions** → Repository permissions → set **Actions** to **Read and write** (this gives `workflow` scope, needed for `repository_dispatch`).
+- **Permissions** → Repository permissions → set **Contents** to **Read and write** (this is what the `POST /repos/{owner}/{repo}/dispatches` endpoint needs to fire `repository_dispatch`). `Actions: Read and write` is also fine to add if you want the token usable for other workflow APIs later.
 
 Copy the token. You won't see it again.
 
