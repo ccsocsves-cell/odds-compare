@@ -20,13 +20,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
-
-      # NordVPN: connect to a Hungarian server before scraping so vegas.hu
-      # accepts the request and boabet sees a HU client. Uses NordVPN service
-      # credentials (not the account email/password) — these are at
+      # NordVPN: connect to a Hungarian server before scraping. vegas.hu's
+      # Altenar endpoint accepts most IPs but tippmixpro's WAMP host
+      # (sportsapi.tippmixpro.hu) is geo-restricted to HU. Uses NordVPN
+      # service credentials (not the account email/password) — these are at
       # https://my.nordaccount.com/dashboard/nordvpn/ → "Manual setup".
+      # Production scraper uses ws+axios only (no Playwright at runtime).
       - name: Install NordVPN CLI
         run: |
           curl -sSf https://downloads.nordcdn.com/apps/linux/install.sh | sh
