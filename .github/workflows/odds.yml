@@ -34,15 +34,10 @@ jobs:
       - name: Connect NordVPN to Hungary
         env:
           NORDVPN_TOKEN: ${{ secrets.NORDVPN_TOKEN }}
-          NORDVPN_USER: ${{ secrets.NORDVPN_USER }}
-          NORDVPN_PASS: ${{ secrets.NORDVPN_PASS }}
         run: |
-          # Token-based login is preferred; fall back to user/pass if needed.
-          if [ -n "$NORDVPN_TOKEN" ]; then
-            sudo nordvpn login --token "$NORDVPN_TOKEN"
-          else
-            echo "$NORDVPN_PASS" | sudo nordvpn login --username "$NORDVPN_USER"
-          fi
+          # Token-only: recent nordvpn CLI removed --username login.
+          # Generate at my.nordaccount.com/dashboard/nordvpn → Access tokens.
+          sudo nordvpn login --token "$NORDVPN_TOKEN"
           sudo nordvpn set technology nordlynx
           sudo nordvpn connect hu
           sudo nordvpn status
