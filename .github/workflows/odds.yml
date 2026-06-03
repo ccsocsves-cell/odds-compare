@@ -1,0 +1,61 @@
+name: Hourly odds comparison
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # hourly, on the hour UTC
+  workflow_dispatch:
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      # NordVPN: connect to a Hungarian server before scraping so vegas.hu
+      # accepts the request and boabet sees a HU client. Uses NordVPN service
+      # credentials (not the account email/password) — these are at
+      # https://my.nordaccount.com/dashboard/nordvpn/ → "Manual setup".
+      - name: Install NordVPN CLI
+        run: |
+          curl -sSf https://downloads.nordcdn.com/apps/linux/install.sh | sh
+          sudo usermod -aG nordvpn $USER
+
+      - name: Connect NordVPN to Hungary
+        env:
+          NORDVPN_TOKEN: ${{ secrets.NORDVPN_TOKEN }}
+          NORDVPN_USER: ${{ secrets.NORDVPN_USER }}
+          NORDVPN_PASS: ${{ secrets.NORDVPN_PASS }}
+        run: |
+          # Token-based login is preferred; fall back to user/pass if needed.
+          if [ -n "$NORDVPN_TOKEN" ]; then
+            sudo nordvpn login --token "$NORDVPN_TOKEN"
+          else
+            echo "$NORDVPN_PASS" | sudo nordvpn login --username "$NORDVPN_USER"
+          fi
+          sudo nordvpn set technology nordlynx
+          sudo nordvpn connect hu
+          sudo nordvpn status
+          curl -s https://ipinfo.io/json
+
+      - name: Run comparator
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          ALERT_THRESHOLD_PCT: '3'
+          ALERT_TOP_N: '10'
+        run: npm run compare
+
+      - name: Disconnect NordVPN
+        if: always()
+        run: sudo nordvpn disconnect || true

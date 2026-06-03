@@ -1,0 +1,24 @@
+{
+  "name": "odds-compare",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Compare sports odds between vegas.hu and tippmixpro.hu; alert to Discord on biggest gaps.",
+  "type": "module",
+  "main": "src/compare.js",
+  "scripts": {
+    "spike": "node src/spike.js",
+    "compare": "node src/compare.js",
+    "compare:dry": "node src/compare.js --dry-run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "date-fns": "^4.1.0",
+    "dotenv": "^16.4.5",
+    "fuse.js": "^7.0.0",
+    "playwright": "^1.48.0",
+    "ws": "^8.21.0"
+  }
+}

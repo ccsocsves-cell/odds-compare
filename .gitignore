@@ -1,0 +1,11 @@
+node_modules/
+data/samples/
+.env
+.env.local
+*.log
+.DS_Store
+
+# Diagnostic stdout dumps (transient; regenerate via src/diag-*.js, src/ws-capture.js)
+boabet-diag.txt
+tippmixpro-diag.txt
+diag*.txt
