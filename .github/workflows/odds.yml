@@ -46,8 +46,9 @@ jobs:
       - name: Run comparator
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          ALERT_THRESHOLD_PCT: '3'
+          ALERT_THRESHOLD_PCT: '0.5'   # min guaranteed profit % for an arb alert
           ALERT_TOP_N: '10'
+          STAKE_BASE: '100'            # bankroll unit used in Discord stake split
         run: npm run compare
 
       - name: Disconnect NordVPN
