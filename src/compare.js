@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { scrapeVegas } from './scrapers/vegas.js';
 import { scrapeTippmixpro } from './scrapers/tippmixpro.js';
+import { scrapeBet365 } from './scrapers/bet365.js';
 import { matchEvents } from './normalize/events.js';
 import { sendDiscord } from './alert/discord.js';
 
@@ -49,11 +50,11 @@ function arbsBetween(vEvent, tEvent) {
 
     const [selA, selB] = selections;
     const bestA = vm.odds[selA] >= tm.odds[selA]
-      ? { odds: vm.odds[selA], book: 'vegas' }
-      : { odds: tm.odds[selA], book: 'tippmixpro' };
+      ? { odds: vm.odds[selA], book: vEvent.source }
+      : { odds: tm.odds[selA], book: tEvent.source };
     const bestB = vm.odds[selB] >= tm.odds[selB]
-      ? { odds: vm.odds[selB], book: 'vegas' }
-      : { odds: tm.odds[selB], book: 'tippmixpro' };
+      ? { odds: vm.odds[selB], book: vEvent.source }
+      : { odds: tm.odds[selB], book: tEvent.source };
 
     if (bestA.book === bestB.book) continue;
 
@@ -87,7 +88,7 @@ function arbsBetween(vEvent, tEvent) {
 // structured rows so discord.js can format them however it wants.
 function nearArbOverview(pairs) {
   const rows = [];
-  for (const { vegas: v, tipp: t } of pairs) {
+  for (const { a: v, b: t } of pairs) {
     for (const vmRaw of v.markets) {
       const key = normalizedMarketKey(vmRaw);
       if (!TWO_LEG_MARKETS.has(key)) continue;
@@ -122,44 +123,50 @@ async function main() {
   console.log('Scraping vegas.hu …');
   const vegasAll = await scrapeVegas();
   const vegas = vegasAll.filter(inWindow);
-  console.log(`  → ${vegasAll.length} total events, ${vegas.length} in window`);
+  console.log(`  → ${vegasAll.length} total, ${vegas.length} in window`);
 
   console.log('Scraping tippmixpro.hu …');
   const tippAll = await scrapeTippmixpro();
   const tipp = tippAll.filter(inWindow);
-  console.log(`  → ${tippAll.length} total events, ${tipp.length} in window`);
+  console.log(`  → ${tippAll.length} total, ${tipp.length} in window`);
 
-  console.log('Matching events …');
-  const pairs = matchEvents(vegas, tipp);
-  console.log(`  → ${pairs.length} matched event pairs`);
+  console.log('Scraping bet365 (via The Odds API) …');
+  const bet365All = await scrapeBet365();
+  const bet365 = bet365All.filter(inWindow);
+  console.log(`  → ${bet365All.length} total, ${bet365.length} in window`);
 
-  const allArbs = pairs.flatMap(p => arbsBetween(p.vegas, p.tipp));
+  // Match events across all 3 bookmaker pairs and collect arbs.
+  console.log('Matching events across all pairs …');
+  const pairsVT  = matchEvents(vegas,  tipp  ).map(p => ({ a: p.vegas, b: p.tipp }));
+  const pairsBT  = matchEvents(bet365, tipp  ).map(p => ({ a: p.vegas, b: p.tipp }));
+  const pairsVB  = matchEvents(vegas,  bet365).map(p => ({ a: p.vegas, b: p.tipp }));
+  const allPairs = [...pairsVT, ...pairsBT, ...pairsVB];
+  console.log(`  → ${pairsVT.length} vegas/tipp  ${pairsBT.length} bet365/tipp  ${pairsVB.length} vegas/bet365`);
+
+  const allArbs = allPairs.flatMap(p => arbsBetween(p.a, p.b));
   allArbs.sort((a, b) => b.profitPct - a.profitPct);
   const profitable = allArbs.filter(a => a.profitPct >= MIN_PROFIT_PCT);
   console.log(`  → ${profitable.length} arbs ≥ ${MIN_PROFIT_PCT}% profit; sending top ${Math.min(profitable.length, TOP_N)}`);
 
-  const nearMisses = nearArbOverview(pairs);
+  const nearMisses = nearArbOverview(allPairs);
 
   if (DRY || profitable.length === 0) {
-    console.log(`\n=== Closest book differences on eligible markets (lowest = best near-arb) ===`);
+    console.log(`\n=== Closest near-arbs (lowest overround = closest to profit) ===`);
     for (const m of nearMisses.slice(0, 10)) {
       const start = new Date(m.startUtc).toISOString().slice(0, 16).replace('T', ' ');
       console.log(`  overround=${m.overroundPct.toFixed(2)}%  ${m.market.padEnd(7)}  ${m.home} vs ${m.away}  [${start}]`);
     }
-    if (!nearMisses.length) {
-      console.log('  (no arb-eligible market pairs)');
-    }
+    if (!nearMisses.length) console.log('  (no arb-eligible market pairs found)');
   }
 
   await sendDiscord(DRY ? null : process.env.DISCORD_WEBHOOK_URL, {
     arbs: profitable.slice(0, TOP_N),
     summary: {
-      vegasInWindow: vegas.length,
-      tippInWindow: tipp.length,
-      pairCount: pairs.length,
+      sources: { vegas: vegas.length, tippmixpro: tipp.length, bet365: bet365.length },
+      pairCount: allPairs.length,
       eligibleMarketCount: nearMisses.length,
       threshold: MIN_PROFIT_PCT,
-      closest: nearMisses[0] || null
+      closest: nearMisses[0] || null,
     }
   });
 }

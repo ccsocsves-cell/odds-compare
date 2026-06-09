@@ -25,8 +25,11 @@ export async function sendDiscord(webhookUrl, { arbs, summary }) {
   }
 }
 
+const BOOK_LABEL = { vegas: 'Vegas.hu', tippmixpro: 'Tippmixpro', bet365: 'bet365' };
+function bookName(raw) { return BOOK_LABEL[raw] ?? raw; }
+
 function buildArbMessages(arbs) {
-  const header = `**${arbs.length} arbitrage opportunit${arbs.length === 1 ? 'y' : 'ies'}** (vegas.hu vs tippmixpro.hu)\n`;
+  const header = `**${arbs.length} arbitrage opportunit${arbs.length === 1 ? 'y' : 'ies'} found**\n`;
   const lines = arbs.map(formatArbLine);
   return chunkLines(header, lines, 1900);
 }
@@ -34,13 +37,18 @@ function buildArbMessages(arbs) {
 function buildStatusMessage(s) {
   if (!s) return 'Scan complete — no summary available.';
 
+  const src = s.sources ?? {};
+  const srcLine = Object.entries(src)
+    .map(([k, v]) => `${bookName(k)}: ${v}`)
+    .join('  ·  ');
+
   let msg = `**Scan complete — no arbs above ${s.threshold}% profit threshold.**\n`;
-  msg += `> vegas: ${s.vegasInWindow} events  ·  tippmixpro: ${s.tippInWindow} events  ·  matched pairs: ${s.pairCount}\n`;
+  msg += `> ${srcLine}  ·  matched pairs: ${s.pairCount}\n`;
   msg += `> arb-eligible markets checked (winner / btts / ou_2.5): ${s.eligibleMarketCount}\n`;
 
   if (s.closest) {
     const start = new Date(s.closest.startUtc).toISOString().slice(0, 16).replace('T', ' ');
-    msg += `\n**Closest to arb** (still profit-negative at this overround):\n`;
+    msg += `\n**Closest to arb** (still profit-negative):\n`;
     msg += `\`${start}Z\` ${s.closest.sport} · ${s.closest.home} vs ${s.closest.away}\n`;
     msg += `  ${s.closest.market} · overround **${s.closest.overroundPct.toFixed(2)}%** (need ≤ 0% for arb)`;
   }
@@ -55,11 +63,11 @@ function formatArbLine(a) {
     `\`${start}Z\` ${a.sport} · **${a.home} vs ${a.away}**` +
     (a.league ? ` _(${a.league})_` : '') + '\n' +
     `  ${a.market} · **+${a.profitPct.toFixed(2)}% guaranteed**` +
-    `  ($${a.totalStake.toFixed(0)} → $${a.guaranteedReturn.toFixed(2)})\n` +
-    `    └ ${A.book} **${selectionLabel(a.market, A.selection)}** @ ${A.odds.toFixed(2)}` +
-    `  stake **$${A.stake.toFixed(2)}**\n` +
-    `    └ ${B.book} **${selectionLabel(a.market, B.selection)}** @ ${B.odds.toFixed(2)}` +
-    `  stake **$${B.stake.toFixed(2)}**`
+    `  (€${a.totalStake.toFixed(0)} → €${a.guaranteedReturn.toFixed(2)})\n` +
+    `    └ ${bookName(A.book)} **${selectionLabel(a.market, A.selection)}** @ ${A.odds.toFixed(2)}` +
+    `  stake **€${A.stake.toFixed(2)}**\n` +
+    `    └ ${bookName(B.book)} **${selectionLabel(a.market, B.selection)}** @ ${B.odds.toFixed(2)}` +
+    `  stake **€${B.stake.toFixed(2)}**`
   );
 }
 

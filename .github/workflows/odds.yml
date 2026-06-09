@@ -1,6 +1,8 @@
 name: Odds arbitrage scan
 
 on:
+  schedule:
+    - cron: '0 */2 * * *'   # every 2 hours — ~9 req/run × 12 runs/day = ~3,240 req/mo (basic tier)
   workflow_dispatch:
   # Triggered remotely by the Discord bot (discord-bot/worker.js) via
   # POST /repos/{owner}/{repo}/dispatches with event_type=run-arbs.
@@ -48,6 +50,7 @@ jobs:
       - name: Run comparator
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           ALERT_THRESHOLD_PCT: '0.5'   # min guaranteed profit % for an arb alert
           ALERT_TOP_N: '10'
           STAKE_BASE: '100'            # bankroll unit used in Discord stake split
