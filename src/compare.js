@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { scrapeVegas } from './scrapers/vegas.js';
 import { scrapeTippmixpro } from './scrapers/tippmixpro.js';
 import { scrapeOddsApi } from './scrapers/oddsapi.js';
+import { scrapeBoabet } from './scrapers/boabet.js';
 import { matchEvents } from './normalize/events.js';
 import { sendDiscord } from './alert/discord.js';
 
@@ -172,13 +173,34 @@ async function main() {
   const odds = oddsAll.filter(inWindow);
   console.log(`  → ${oddsAll.length} total, ${odds.length} in window`);
 
-  // Match events across all 3 bookmaker pairs and collect arbs.
+  console.log('Scraping boabet (Playwright) …');
+  let boaAll = [];
+  try {
+    boaAll = await scrapeBoabet();
+  } catch (err) {
+    console.warn(`  [boabet] scrape failed: ${err.message}`);
+  }
+  const boa = boaAll.filter(inWindow);
+  console.log(`  → ${boaAll.length} total, ${boa.length} in window`);
+
+  // Match events across every source pair and collect arbs.
   console.log('Matching events across all pairs …');
-  const pairsVT  = matchEvents(vegas, tipp).map(p => ({ a: p.vegas, b: p.tipp }));
-  const pairsOT  = matchEvents(odds,  tipp).map(p => ({ a: p.vegas, b: p.tipp }));
-  const pairsVO  = matchEvents(vegas, odds).map(p => ({ a: p.vegas, b: p.tipp }));
-  const allPairs = [...pairsVT, ...pairsOT, ...pairsVO];
-  console.log(`  → ${pairsVT.length} vegas/tipp  ${pairsOT.length} oddsapi/tipp  ${pairsVO.length} vegas/oddsapi`);
+  const sources = [
+    ['vegas', vegas], ['tipp', tipp], ['oddsapi', odds], ['boabet', boa],
+  ];
+  const allPairs = [];
+  const pairCounts = [];
+  for (let i = 0; i < sources.length; i++) {
+    for (let j = i + 1; j < sources.length; j++) {
+      const [nameA, evsA] = sources[i];
+      const [nameB, evsB] = sources[j];
+      if (!evsA.length || !evsB.length) continue;
+      const pairs = matchEvents(evsA, evsB).map(p => ({ a: p.vegas, b: p.tipp }));
+      allPairs.push(...pairs);
+      pairCounts.push(`${pairs.length} ${nameA}/${nameB}`);
+    }
+  }
+  console.log(`  → ${pairCounts.join('  ') || 'no source pair had events on both sides'}`);
 
   // Cross-source arbs from matched pairs + intra-oddsapi arbs (best Over at
   // one book, best Under at another — no cross-source match needed).
@@ -203,7 +225,7 @@ async function main() {
   await sendDiscord(DRY ? null : process.env.DISCORD_WEBHOOK_URL, {
     arbs: profitable.slice(0, TOP_N),
     summary: {
-      sources: { vegas: vegas.length, tippmixpro: tipp.length, oddsapi: odds.length },
+      sources: { vegas: vegas.length, tippmixpro: tipp.length, oddsapi: odds.length, boabet: boa.length },
       pairCount: allPairs.length,
       eligibleMarketCount: nearMisses.length,
       threshold: MIN_PROFIT_PCT,

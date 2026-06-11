@@ -1,8 +1,9 @@
 name: Odds arbitrage scan
 
+# Manual-only by design (no cron): run via the /arbs Discord command or the
+# Actions "Run workflow" button. At ~2 runs/week the Odds API usage is
+# ~19 keys × 2 markets × 9 runs/mo ≈ 350 req/mo — fits even the free tier.
 on:
-  schedule:
-    - cron: '0 */2 * * *'   # every 2 hours — ~9 req/run × 12 runs/day = ~3,240 req/mo (basic tier)
   workflow_dispatch:
   # Triggered remotely by the Discord bot (discord-bot/worker.js) via
   # POST /repos/{owner}/{repo}/dispatches with event_type=run-arbs.
@@ -23,6 +24,11 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # Chromium for the boabet scraper (Playwright). The other scrapers are
+      # plain HTTP/WebSocket and don't need a browser.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
 
       # NordVPN: connect to a Hungarian server before scraping. vegas.hu's
       # Altenar endpoint accepts most IPs but tippmixpro's WAMP host

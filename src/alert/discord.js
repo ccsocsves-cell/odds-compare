@@ -26,7 +26,7 @@ export async function sendDiscord(webhookUrl, { arbs, summary }) {
 }
 
 const BOOK_LABEL = {
-  vegas: 'Vegas.hu', tippmixpro: 'Tippmixpro', oddsapi: 'OddsAPI',
+  vegas: 'Vegas.hu', tippmixpro: 'Tippmixpro', oddsapi: 'OddsAPI', boabet: 'Boabet',
   // Per-book attribution from the aggregated oddsapi source
   pinnacle: 'Pinnacle', marathonbet: 'Marathonbet', williamhill: 'William Hill',
   unibet_uk: 'Unibet', betsson: 'Betsson', nordicbet: 'NordicBet',

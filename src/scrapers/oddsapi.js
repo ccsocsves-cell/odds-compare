@@ -22,8 +22,9 @@ const BOOKMAKERS = (process.env.ODDS_API_BOOKMAKERS ??
 // season and query odds only for the first MAX_KEYS_PER_RUN active ones.
 // The old hardcoded list was 100% European winter leagues, every one of
 // which 422s (off-season) from late May to August.
-// API usage note: ≤9 keys × 2 markets × 12 runs/day (every 2h) ≈ 6,500
-// req/month worst case → requires The Odds API basic tier ($4/mo, 10k req).
+// API usage note: runs are manual-only (~2/week), so we query every
+// in-season candidate: 19 keys × 2 markets × ~9 runs/mo ≈ 350 req/month
+// — fits even The Odds API free tier (500/mo).
 const CANDIDATE_KEYS = [
   // Tournaments (seasonal, highest liquidity when on)
   { key: 'soccer_fifa_world_cup',           sport: 'Football' },
@@ -50,9 +51,10 @@ const CANDIDATE_KEYS = [
   { key: 'baseball_mlb',                    sport: 'Baseball' },
 ];
 
-// Cap odds requests per run so API quota usage stays flat regardless of
-// how many candidates happen to be in season.
-const MAX_KEYS_PER_RUN = Number(process.env.ODDS_API_MAX_KEYS ?? 9);
+// Safety cap on odds requests per run. Default covers every candidate —
+// affordable because runs are manual-only; lower it via env if a cron
+// schedule ever comes back.
+const MAX_KEYS_PER_RUN = Number(process.env.ODDS_API_MAX_KEYS ?? CANDIDATE_KEYS.length);
 
 export async function scrapeOddsApi() {
   if (!KEY) {
