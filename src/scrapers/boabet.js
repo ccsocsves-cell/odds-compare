@@ -97,7 +97,18 @@ async function scrapeOne(entryUrl) {
     }
 
     // Boabet's sportsbook fragment takes a moment to negotiate auth + fetch odds
-    await page.waitForTimeout(25000);
+    await page.waitForTimeout(15000);
+
+    // The overview page only loads promo banners — the actual odds lists are
+    // fetched when the pre-match section opens.
+    if (/\/sports\/sportsbook/.test(page.url()) && !page.url().includes('pre-match')) {
+      const preMatch = new URL('/en/sports/sportsbook/pre-match', page.url()).href;
+      console.log(`  boabet: opening pre-match section …`);
+      await page.goto(preMatch, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(e => console.warn(`  boabet pre-match nav: ${e.message}`));
+      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+      await page.waitForTimeout(15000);
+    }
+
     finalUrl = page.url();
     title = await page.title().catch(() => '');
     if (SAVE_SAMPLES) html = await page.content().catch(() => '');
@@ -149,6 +160,11 @@ function writeSamples(prefix, payloads) {
       JSON.stringify(payloads[i].json, null, 2)
     );
   }
+  // Sample filenames truncate URLs — keep a full-URL index for parser work.
+  fs.appendFileSync(
+    path.join(SAMPLE_DIR, `${prefix}-url-index.txt`),
+    payloads.map((p, i) => `${i}\t${JSON.stringify(p.json).length}B\t${p.url}`).join('\n') + '\n'
+  );
 }
 
 // Boabet's backend shape is unknown until the first capture. This parser tries
