@@ -2,8 +2,10 @@ import 'dotenv/config';
 import { scrapeVegas } from './scrapers/vegas.js';
 import { scrapeTippmixpro } from './scrapers/tippmixpro.js';
 import { scrapeBoabet } from './scrapers/boabet.js';
-import { matchEvents } from './normalize/events.js';
+import { scrapeTwentyTwoBet } from './scrapers/twentytwobet.js';
+import { clusterEvents } from './normalize/events.js';
 import { sendDiscord } from './alert/discord.js';
+import { loadSeen, saveSeen, filterNew, markSeen, pruneSeen } from './alert/dedup.js';
 
 const DRY = process.argv.includes('--dry-run');
 // Minimum guaranteed profit (% of total stake) required to alert. Typical
@@ -11,11 +13,21 @@ const DRY = process.argv.includes('--dry-run');
 const MIN_PROFIT_PCT = Number(process.env.ALERT_THRESHOLD_PCT ?? 0.5);
 const TOP_N = Number(process.env.ALERT_TOP_N ?? 10);
 const STAKE_BASE = Number(process.env.STAKE_BASE ?? 100);
+// Re-alert a previously posted arb only when its profit improved by more
+// than this many percentage points.
+const DEDUP_IMPROVE_PCT = Number(process.env.DEDUP_IMPROVE_PCT ?? 0.3);
+const SEEN_PATH = process.env.SEEN_ARBS_PATH ?? 'data/seen-arbs.json';
 
-// Only 2-outcome markets are eligible for 2-leg arbitrage. 1X2 (3 outcomes)
-// is excluded by design - user wants "both sides of a single bet on different
-// platforms", which means one leg per book.
-const TWO_LEG_MARKETS = new Set(['winner', 'btts', 'ou_2.5']);
+// Arb-eligible markets and their full selection sets. 1x2 is a genuine
+// 3-leg arb (one leg per outcome, legs spread across ≥2 books); the rest are
+// classic 2-leg two-way markets. An arb needs EVERY selection covered, so a
+// market only qualifies when the best-of-cluster prices span all of them.
+const ARB_MARKETS = {
+  winner: ['1', '2'],
+  btts: ['yes', 'no'],
+  'ou_2.5': ['over', 'under'],
+  '1x2': ['1', 'X', '2'],
+};
 
 const now = Date.now();
 const WINDOW_MIN_MS = now + 2 * 3600 * 1000;
@@ -34,83 +46,83 @@ function normalizedMarketKey(market) {
   return market.key;
 }
 
-function arbsBetween(vEvent, tEvent) {
+// Per cluster + market: pick the best price for every selection across all
+// member books. Returns null when the market isn't comparable (fewer than 2
+// books carry it, or a selection is missing entirely).
+//
+// A 3-way 1x2 from one book is never mixed with a 2-way winner from another:
+// normalizedMarketKey keeps the two as distinct keys, so a draw can never be
+// left unhedged by accident.
+function bestOfCluster(cluster, marketKey, selections) {
+  const best = {};
+  let booksWithMarket = 0;
+  for (const [source, ev] of Object.entries(cluster.members)) {
+    const m = ev.markets.find(x => normalizedMarketKey(x) === marketKey);
+    if (!m) continue;
+    booksWithMarket++;
+    for (const sel of selections) {
+      const price = m.odds[sel];
+      if (!Number.isFinite(price)) continue;
+      if (!best[sel] || price > best[sel].odds) best[sel] = { odds: price, book: source };
+    }
+  }
+  if (booksWithMarket < 2) return null;
+  if (!selections.every(s => best[s])) return null;
+  return best;
+}
+
+export function arbsInCluster(cluster) {
   const out = [];
-  for (const vmRaw of vEvent.markets) {
-    const vmKey = normalizedMarketKey(vmRaw);
-    if (!TWO_LEG_MARKETS.has(vmKey)) continue;
-    const tmRaw = tEvent.markets.find(m => normalizedMarketKey(m) === vmKey);
-    if (!tmRaw) continue;
-    const vm = { key: vmKey, odds: vmRaw.odds, books: vmRaw.books };
-    const tm = { key: vmKey, odds: tmRaw.odds, books: tmRaw.books };
+  for (const [marketKey, selections] of Object.entries(ARB_MARKETS)) {
+    const best = bestOfCluster(cluster, marketKey, selections);
+    if (!best) continue;
 
-    const selections = [...new Set([...Object.keys(vm.odds), ...Object.keys(tm.odds)])];
-    if (selections.length !== 2) continue;
-    if (!selections.every(s => Number.isFinite(vm.odds[s]) && Number.isFinite(tm.odds[s]))) continue;
+    // All legs at one book is just that book's (negative-margin?) market —
+    // not a cross-book arb we can lock in.
+    if (new Set(selections.map(s => best[s].book)).size < 2) continue;
 
-    const bookOf = (mkt, ev, sel) => ev.source;
-    const [selA, selB] = selections;
-    const bestA = vm.odds[selA] >= tm.odds[selA]
-      ? { odds: vm.odds[selA], book: bookOf(vm, vEvent, selA) }
-      : { odds: tm.odds[selA], book: bookOf(tm, tEvent, selA) };
-    const bestB = vm.odds[selB] >= tm.odds[selB]
-      ? { odds: vm.odds[selB], book: bookOf(vm, vEvent, selB) }
-      : { odds: tm.odds[selB], book: bookOf(tm, tEvent, selB) };
-
-    if (bestA.book === bestB.book) continue;
-
-    const totalImplied = 1 / bestA.odds + 1 / bestB.odds;
+    const totalImplied = selections.reduce((t, s) => t + 1 / best[s].odds, 0);
     if (totalImplied >= 1) continue;
 
-    const stakeA = (STAKE_BASE * (1 / bestA.odds)) / totalImplied;
-    const stakeB = (STAKE_BASE * (1 / bestB.odds)) / totalImplied;
-    const guaranteedReturn = STAKE_BASE / totalImplied;
-    const profitPct = (1 - totalImplied) / totalImplied * 100;
-
     out.push({
-      sport: vEvent.sport,
-      home: vEvent.home,
-      away: vEvent.away,
-      league: vEvent.league,
-      startUtc: vEvent.startUtc,
-      market: vm.key,
-      legA: { selection: selA, odds: bestA.odds, book: bestA.book, stake: stakeA },
-      legB: { selection: selB, odds: bestB.odds, book: bestB.book, stake: stakeB },
+      sport: cluster.sport,
+      home: cluster.home,
+      away: cluster.away,
+      league: cluster.league,
+      startUtc: cluster.startUtc,
+      market: marketKey,
+      legs: selections.map(s => ({
+        selection: s,
+        odds: best[s].odds,
+        book: best[s].book,
+        stake: (STAKE_BASE * (1 / best[s].odds)) / totalImplied,
+      })),
       totalStake: STAKE_BASE,
-      guaranteedReturn,
-      profitPct
+      guaranteedReturn: STAKE_BASE / totalImplied,
+      profitPct: (1 - totalImplied) / totalImplied * 100
     });
   }
   return out;
 }
 
-// Per matched pair + arb-eligible market, compute the best-of-both implied
-// total. Sorted ascending so the lowest (= closest to arb) is first. Returns
+// Per cluster + arb-eligible market, the best-of-cluster implied total.
+// Sorted ascending so the lowest (= closest to arb) is first. Returns
 // structured rows so discord.js can format them however it wants.
-function nearArbOverview(pairs) {
+function nearArbOverview(clusters) {
   const rows = [];
-  for (const { a: v, b: t } of pairs) {
-    for (const vmRaw of v.markets) {
-      const key = normalizedMarketKey(vmRaw);
-      if (!TWO_LEG_MARKETS.has(key)) continue;
-      const tmRaw = t.markets.find(m => normalizedMarketKey(m) === key);
-      if (!tmRaw) continue;
-      const vm = { key, odds: vmRaw.odds };
-      const tm = { key, odds: tmRaw.odds };
-      const sels = [...new Set([...Object.keys(vm.odds), ...Object.keys(tm.odds)])];
-      if (sels.length !== 2 || !sels.every(s => Number.isFinite(vm.odds[s]) && Number.isFinite(tm.odds[s]))) continue;
-      const [a, b] = sels;
-      const bestA = Math.max(vm.odds[a], tm.odds[a]);
-      const bestB = Math.max(vm.odds[b], tm.odds[b]);
-      const total = 1 / bestA + 1 / bestB;
+  for (const cluster of clusters) {
+    for (const [marketKey, selections] of Object.entries(ARB_MARKETS)) {
+      const best = bestOfCluster(cluster, marketKey, selections);
+      if (!best) continue;
+      const total = selections.reduce((t, s) => t + 1 / best[s].odds, 0);
       rows.push({
         total,
         overroundPct: (total - 1) * 100,
-        market: key,
-        home: v.home,
-        away: v.away,
-        sport: v.sport,
-        startUtc: v.startUtc
+        market: marketKey,
+        home: cluster.home,
+        away: cluster.away,
+        sport: cluster.sport,
+        startUtc: cluster.startUtc
       });
     }
   }
@@ -138,33 +150,33 @@ async function main() {
 
   const vegas = await scrapeSafe('vegas.hu', scrapeVegas);
   const tipp  = await scrapeSafe('tippmixpro.hu', scrapeTippmixpro);
-  const boa   = await scrapeSafe('boabet (Playwright)', scrapeBoabet);
+  const bet22 = await scrapeSafe('22bet (LineFeed)', scrapeTwentyTwoBet);
+  // boabet costs a headed Chromium launch (~1 min) and flaps when Digitain's
+  // bot wall rotates — ENABLE_BOABET=0 turns it off without a code change.
+  const boa = process.env.ENABLE_BOABET === '0'
+    ? []
+    : await scrapeSafe('boabet (Playwright)', scrapeBoabet);
 
-  // Match events across every source pair and collect arbs.
-  console.log('Matching events across all pairs …');
-  const sources = [
-    ['vegas', vegas], ['tipp', tipp], ['boabet', boa],
-  ];
-  const allPairs = [];
-  const pairCounts = [];
-  for (let i = 0; i < sources.length; i++) {
-    for (let j = i + 1; j < sources.length; j++) {
-      const [nameA, evsA] = sources[i];
-      const [nameB, evsB] = sources[j];
-      if (!evsA.length || !evsB.length) continue;
-      const pairs = matchEvents(evsA, evsB).map(p => ({ a: p.vegas, b: p.tipp }));
-      allPairs.push(...pairs);
-      pairCounts.push(`${pairs.length} ${nameA}/${nameB}`);
-    }
+  // Cluster the same real-world match across all sources, then arb each
+  // cluster on best-of-cluster prices.
+  console.log('Clustering events across sources …');
+  const clusters = clusterEvents([
+    ['vegas', vegas], ['tippmixpro', tipp], ['bet22', bet22], ['boabet', boa],
+  ]);
+  const sizeCounts = {};
+  for (const c of clusters) {
+    const n = Object.keys(c.members).length;
+    sizeCounts[n] = (sizeCounts[n] || 0) + 1;
   }
-  console.log(`  → ${pairCounts.join('  ') || 'no source pair had events on both sides'}`);
+  const sizeSummary = Object.entries(sizeCounts).map(([n, c]) => `${c}×${n}-book`).join('  ');
+  console.log(`  → ${clusters.length} clusters (${sizeSummary || 'none'})`);
 
-  const allArbs = allPairs.flatMap(p => arbsBetween(p.a, p.b));
+  const allArbs = clusters.flatMap(arbsInCluster);
   allArbs.sort((a, b) => b.profitPct - a.profitPct);
   const profitable = allArbs.filter(a => a.profitPct >= MIN_PROFIT_PCT);
   console.log(`  → ${profitable.length} arbs ≥ ${MIN_PROFIT_PCT}% profit; sending top ${Math.min(profitable.length, TOP_N)}`);
 
-  const nearMisses = nearArbOverview(allPairs);
+  const nearMisses = nearArbOverview(clusters);
 
   if (DRY || profitable.length === 0) {
     console.log(`\n=== Closest near-arbs (lowest overround = closest to profit) ===`);
@@ -172,22 +184,47 @@ async function main() {
       const start = new Date(m.startUtc).toISOString().slice(0, 16).replace('T', ' ');
       console.log(`  overround=${m.overroundPct.toFixed(2)}%  ${m.market.padEnd(7)}  ${m.home} vs ${m.away}  [${start}]`);
     }
-    if (!nearMisses.length) console.log('  (no arb-eligible market pairs found)');
+    if (!nearMisses.length) console.log('  (no arb-eligible cluster markets found)');
   }
 
-  await sendDiscord(DRY ? null : process.env.DISCORD_WEBHOOK_URL, {
-    arbs: profitable.slice(0, TOP_N),
-    summary: {
-      sources: { vegas: vegas.length, tippmixpro: tipp.length, boabet: boa.length },
-      pairCount: allPairs.length,
-      eligibleMarketCount: nearMisses.length,
-      threshold: MIN_PROFIT_PCT,
-      closest: nearMisses[0] || null,
-    }
-  });
+  // De-dup against previous runs: the cron rediscovers the same arb every
+  // 20 minutes; only newly seen (or meaningfully improved) ones get posted.
+  const top = profitable.slice(0, TOP_N);
+  const seen = loadSeen(SEEN_PATH);
+  pruneSeen(seen);
+  const fresh = DRY ? top : filterNew(top, seen, DEDUP_IMPROVE_PCT);
+  if (top.length && !fresh.length) {
+    console.log(`  → all ${top.length} arbs already alerted in a previous run (dedup)`);
+  }
+  markSeen(top, seen);
+  if (!DRY) saveSeen(SEEN_PATH, seen);
+
+  const summary = {
+    sources: { vegas: vegas.length, tippmixpro: tipp.length, bet22: bet22.length, boabet: boa.length },
+    clusterCount: clusters.length,
+    eligibleMarketCount: nearMisses.length,
+    threshold: MIN_PROFIT_PCT,
+    closest: nearMisses[0] || null,
+  };
+
+  // Silent unless there's something to act on: post only for fresh arbs, or
+  // when HEARTBEAT=1 forces a "scan healthy" status (one scheduled run a day
+  // sets it so a silent week is distinguishable from a broken pipeline).
+  if (DRY) {
+    await sendDiscord(null, { arbs: fresh, summary });
+  } else if (fresh.length || process.env.HEARTBEAT === '1') {
+    await sendDiscord(process.env.DISCORD_WEBHOOK_URL, { arbs: fresh, summary });
+  } else {
+    console.log('No new arbs — staying silent (no Discord post).');
+  }
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+// Only run when executed directly (node src/compare.js) — lets tests import
+// arbsInCluster without kicking off a full scrape.
+import { pathToFileURL } from 'node:url';
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+}

@@ -96,23 +96,26 @@ function flipEvent(e) {
   };
 }
 
-export function matchEvents(vegasEvents, tippEvents) {
+// Greedy 1:1 matching of two event lists from different books. Returns
+// { a, b } pairs where `b` is reoriented (home/away + 1/2 selections
+// flipped) to match `a`'s orientation when the books disagree.
+export function matchEvents(eventsA, eventsB) {
   const pairs = [];
   const used = new Set();
 
-  // Pre-canonicalize sports on both sides
-  const tipps = tippEvents.map(t => ({ ...t, _sport: canonicalSport(t.sport) }));
+  // Pre-canonicalize sports on the candidate side
+  const bs = eventsB.map(b => ({ ...b, _sport: canonicalSport(b.sport) }));
 
-  for (const v of vegasEvents) {
-    const vSport = canonicalSport(v.sport);
-    const vHome = aliasTeam(v.home);
-    const vAway = aliasTeam(v.away);
-    const vStart = new Date(v.startUtc).getTime();
+  for (const a of eventsA) {
+    const aSport = canonicalSport(a.sport);
+    const aHome = aliasTeam(a.home);
+    const aAway = aliasTeam(a.away);
+    const aStart = new Date(a.startUtc).getTime();
 
-    const candidates = tipps.filter(t =>
-      !used.has(t.bookId) &&
-      t._sport && vSport && t._sport === vSport &&
-      Math.abs(new Date(t.startUtc).getTime() - vStart) < START_TOL_MS
+    const candidates = bs.filter(b =>
+      !used.has(b.bookId) &&
+      b._sport && aSport && b._sport === aSport &&
+      Math.abs(new Date(b.startUtc).getTime() - aStart) < START_TOL_MS
     );
     if (!candidates.length) continue;
 
@@ -120,18 +123,73 @@ export function matchEvents(vegasEvents, tippEvents) {
       candidates.map(c => ({ ...c, homeA: aliasTeam(c.home), awayA: aliasTeam(c.away) })),
       { keys: ['homeA', 'awayA'], includeScore: true, threshold: 0.4 }
     );
-    const homeHits = fuse.search(vHome);
-    const awayHits = fuse.search(vAway);
+    const homeHits = fuse.search(aHome);
+    const awayHits = fuse.search(aAway);
     if (!homeHits.length || !awayHits.length) continue;
 
-    const top = homeHits.find(h => awayHits.some(a => a.item.bookId === h.item.bookId));
+    const top = homeHits.find(h => awayHits.some(x => x.item.bookId === h.item.bookId));
     if (!top) continue;
 
     used.add(top.item.bookId);
-    const t = isFlipped(vHome, vAway, top.item.homeA, top.item.awayA)
+    const b = isFlipped(aHome, aAway, top.item.homeA, top.item.awayA)
       ? flipEvent(top.item)
       : top.item;
-    pairs.push({ vegas: v, tipp: t });
+    pairs.push({ a, b });
   }
   return pairs;
+}
+
+// Cluster the same real-world match across N sources. Anchor-merge: the
+// largest source seeds the clusters and every other source is matched
+// against it with the (orientation-aware) pairwise matcher above. Sources
+// that the anchor doesn't carry still get paired up in a second pass over
+// the leftovers, so e.g. a tippmixpro↔22bet-only match isn't lost just
+// because vegas doesn't list it.
+//
+// In:  [['vegas', events], ['tippmixpro', events], ...]
+// Out: [{ sport, league, home, away, startUtc, members: { source: event } }]
+//      — only clusters with ≥2 members (cross-book arbs need at least two).
+export function clusterEvents(named) {
+  const pool = named
+    .map(([source, events]) => ({ source, events: [...events] }))
+    .filter(s => s.events.length > 0)
+    .sort((x, y) => y.events.length - x.events.length);
+
+  const clusters = [];
+
+  // Repeatedly: largest remaining source anchors, the rest match against it.
+  // Anything unmatched stays in the pool for the next round, so every source
+  // pair gets a chance even when the global anchor doesn't carry the match.
+  while (pool.length >= 2) {
+    const anchor = pool.shift();
+    const byAnchorId = new Map();
+    for (const ev of anchor.events) {
+      byAnchorId.set(ev.bookId, {
+        sport: ev.sport,
+        league: ev.league,
+        home: ev.home,
+        away: ev.away,
+        startUtc: ev.startUtc,
+        members: { [anchor.source]: ev },
+      });
+    }
+
+    for (const src of pool) {
+      const pairs = matchEvents(anchor.events, src.events);
+      const matched = new Set();
+      for (const { a, b } of pairs) {
+        byAnchorId.get(a.bookId).members[src.source] = b;
+        matched.add(b.bookId);
+      }
+      src.events = src.events.filter(e => !matched.has(e.bookId));
+    }
+
+    clusters.push(...[...byAnchorId.values()].filter(c => Object.keys(c.members).length >= 2));
+
+    // Sources with leftovers re-enter the next round, largest first.
+    for (let i = pool.length - 1; i >= 0; i--) if (!pool[i].events.length) pool.splice(i, 1);
+    pool.sort((x, y) => y.events.length - x.events.length);
+  }
+
+  return clusters;
 }

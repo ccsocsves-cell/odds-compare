@@ -1,6 +1,6 @@
-// Always posts to Discord (no silent skip). When there are no arbs above
-// threshold, posts a short "scan complete" status with summary + closest
-// near-arb so the user knows the scan ran and what the market looks like.
+// Posts arb alerts, or (only when explicitly invoked with no arbs — dry-run
+// and heartbeat paths) a short status with summary + closest near-arb.
+// compare.js decides whether to call at all; routine no-arb runs stay silent.
 export async function sendDiscord(webhookUrl, { arbs, summary }) {
   const messages = arbs.length
     ? buildArbMessages(arbs)
@@ -26,7 +26,7 @@ export async function sendDiscord(webhookUrl, { arbs, summary }) {
 }
 
 const BOOK_LABEL = {
-  vegas: 'Vegas.hu', tippmixpro: 'Tippmixpro', boabet: 'Boabet',
+  vegas: 'Vegas.hu', tippmixpro: 'Tippmixpro', bet22: '22bet', boabet: 'Boabet',
 };
 function bookName(raw) { return BOOK_LABEL[raw] ?? raw; }
 
@@ -44,9 +44,9 @@ function buildStatusMessage(s) {
     .map(([k, v]) => `${bookName(k)}: ${v}`)
     .join('  ·  ');
 
-  let msg = `**Scan complete — no arbs above ${s.threshold}% profit threshold.**\n`;
-  msg += `> ${srcLine}  ·  matched pairs: ${s.pairCount}\n`;
-  msg += `> arb-eligible markets checked (winner / btts / ou_2.5): ${s.eligibleMarketCount}\n`;
+  let msg = `**Scan complete — no new arbs above ${s.threshold}% profit threshold.**\n`;
+  msg += `> ${srcLine}  ·  matched clusters: ${s.clusterCount}\n`;
+  msg += `> arb-eligible markets checked (1x2 / winner / btts / ou_2.5): ${s.eligibleMarketCount}\n`;
 
   if (s.closest) {
     const start = new Date(s.closest.startUtc).toISOString().slice(0, 16).replace('T', ' ');
@@ -59,23 +59,23 @@ function buildStatusMessage(s) {
 
 function formatArbLine(a) {
   const start = new Date(a.startUtc).toISOString().slice(0, 16).replace('T', ' ');
-  const A = a.legA;
-  const B = a.legB;
+  const legLines = a.legs.map(l =>
+    `    └ ${bookName(l.book)} **${selectionLabel(a.market, l.selection)}** @ ${l.odds.toFixed(2)}` +
+    `  stake **€${l.stake.toFixed(2)}**`
+  );
   return (
     `\`${start}Z\` ${a.sport} · **${a.home} vs ${a.away}**` +
     (a.league ? ` _(${a.league})_` : '') + '\n' +
     `  ${a.market} · **+${a.profitPct.toFixed(2)}% guaranteed**` +
     `  (€${a.totalStake.toFixed(0)} → €${a.guaranteedReturn.toFixed(2)})\n` +
-    `    └ ${bookName(A.book)} **${selectionLabel(a.market, A.selection)}** @ ${A.odds.toFixed(2)}` +
-    `  stake **€${A.stake.toFixed(2)}**\n` +
-    `    └ ${bookName(B.book)} **${selectionLabel(a.market, B.selection)}** @ ${B.odds.toFixed(2)}` +
-    `  stake **€${B.stake.toFixed(2)}**`
+    legLines.join('\n')
   );
 }
 
 function selectionLabel(market, sel) {
-  if (market === 'winner') {
+  if (market === 'winner' || market === '1x2') {
     if (sel === '1') return 'Home';
+    if (sel === 'X') return 'Draw';
     if (sel === '2') return 'Away';
   }
   if (market === 'ou_2.5') {
