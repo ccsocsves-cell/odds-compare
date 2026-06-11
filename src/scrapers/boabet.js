@@ -68,19 +68,28 @@ async function scrapeOne(entryUrl) {
     ws.on('framereceived', grab);
   });
 
+  let finalUrl = '', title = '', html = '';
   try {
     await page.goto(entryUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
     // Boabet's sportsbook iframe takes a moment to negotiate auth + fetch odds
     await page.waitForTimeout(20000);
+    finalUrl = page.url();
+    title = await page.title().catch(() => '');
+    if (SAVE_SAMPLES) html = await page.content().catch(() => '');
   } finally {
     await browser.close();
   }
 
-  console.log(`  boabet ${entryUrl}: ${payloads.length} json payloads, ${wsFrames.length} ws frames captured`);
+  console.log(`  boabet ${entryUrl}: ${payloads.length} json payloads, ${wsFrames.length} ws frames; landed on "${finalUrl}" (title: ${JSON.stringify(title)})`);
   if (SAVE_SAMPLES) {
     writeSamples('boabet', payloads);
     writeWsFrames('boabet', wsFrames);
+    if (html) {
+      fs.mkdirSync(SAMPLE_DIR, { recursive: true });
+      const slug = entryUrl.replace(/[^a-z0-9]+/gi, '_').slice(-50);
+      fs.writeFileSync(path.join(SAMPLE_DIR, `boabet-html-${slug}.html`), html);
+    }
   }
   return parseBoabetPayloads([...payloads, ...wsFramesAsPayloads(wsFrames)]);
 }
