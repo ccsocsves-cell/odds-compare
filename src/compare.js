@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { scrapeVegas } from './scrapers/vegas.js';
 import { scrapeTippmixpro } from './scrapers/tippmixpro.js';
-import { scrapeBet365 } from './scrapers/bet365.js';
+import { scrapeOddsApi } from './scrapers/oddsapi.js';
 import { matchEvents } from './normalize/events.js';
 import { sendDiscord } from './alert/discord.js';
 
@@ -41,20 +41,23 @@ function arbsBetween(vEvent, tEvent) {
     if (!TWO_LEG_MARKETS.has(vmKey)) continue;
     const tmRaw = tEvent.markets.find(m => normalizedMarketKey(m) === vmKey);
     if (!tmRaw) continue;
-    const vm = { key: vmKey, odds: vmRaw.odds };
-    const tm = { key: vmKey, odds: tmRaw.odds };
+    const vm = { key: vmKey, odds: vmRaw.odds, books: vmRaw.books };
+    const tm = { key: vmKey, odds: tmRaw.odds, books: tmRaw.books };
 
     const selections = [...new Set([...Object.keys(vm.odds), ...Object.keys(tm.odds)])];
     if (selections.length !== 2) continue;
     if (!selections.every(s => Number.isFinite(vm.odds[s]) && Number.isFinite(tm.odds[s]))) continue;
 
+    // Aggregated sources (oddsapi) carry per-selection book attribution in
+    // market.books — prefer that over the generic event source name.
+    const bookOf = (mkt, ev, sel) => mkt.books?.[sel] ?? ev.source;
     const [selA, selB] = selections;
     const bestA = vm.odds[selA] >= tm.odds[selA]
-      ? { odds: vm.odds[selA], book: vEvent.source }
-      : { odds: tm.odds[selA], book: tEvent.source };
+      ? { odds: vm.odds[selA], book: bookOf(vm, vEvent, selA) }
+      : { odds: tm.odds[selA], book: bookOf(tm, tEvent, selA) };
     const bestB = vm.odds[selB] >= tm.odds[selB]
-      ? { odds: vm.odds[selB], book: vEvent.source }
-      : { odds: tm.odds[selB], book: tEvent.source };
+      ? { odds: vm.odds[selB], book: bookOf(vm, vEvent, selB) }
+      : { odds: tm.odds[selB], book: bookOf(tm, tEvent, selB) };
 
     if (bestA.book === bestB.book) continue;
 
@@ -78,6 +81,40 @@ function arbsBetween(vEvent, tEvent) {
       totalStake: STAKE_BASE,
       guaranteedReturn,
       profitPct
+    });
+  }
+  return out;
+}
+
+// The oddsapi source aggregates 10 bookmakers, so a single event can carry
+// an internal arb (e.g. Over best at pinnacle, Under best at williamhill).
+// These don't need a cross-source match at all.
+function arbsWithinEvent(e) {
+  const out = [];
+  for (const mRaw of e.markets) {
+    const key = normalizedMarketKey(mRaw);
+    if (!TWO_LEG_MARKETS.has(key) || !mRaw.books) continue;
+    const sels = Object.keys(mRaw.odds);
+    if (sels.length !== 2) continue;
+    const [selA, selB] = sels;
+    if (!Number.isFinite(mRaw.odds[selA]) || !Number.isFinite(mRaw.odds[selB])) continue;
+    if (mRaw.books[selA] === mRaw.books[selB]) continue;
+
+    const totalImplied = 1 / mRaw.odds[selA] + 1 / mRaw.odds[selB];
+    if (totalImplied >= 1) continue;
+
+    out.push({
+      sport: e.sport,
+      home: e.home,
+      away: e.away,
+      league: e.league,
+      startUtc: e.startUtc,
+      market: key,
+      legA: { selection: selA, odds: mRaw.odds[selA], book: mRaw.books[selA], stake: (STAKE_BASE * (1 / mRaw.odds[selA])) / totalImplied },
+      legB: { selection: selB, odds: mRaw.odds[selB], book: mRaw.books[selB], stake: (STAKE_BASE * (1 / mRaw.odds[selB])) / totalImplied },
+      totalStake: STAKE_BASE,
+      guaranteedReturn: STAKE_BASE / totalImplied,
+      profitPct: (1 - totalImplied) / totalImplied * 100
     });
   }
   return out;
@@ -130,20 +167,24 @@ async function main() {
   const tipp = tippAll.filter(inWindow);
   console.log(`  → ${tippAll.length} total, ${tipp.length} in window`);
 
-  console.log('Scraping bet365 (via The Odds API) …');
-  const bet365All = await scrapeBet365();
-  const bet365 = bet365All.filter(inWindow);
-  console.log(`  → ${bet365All.length} total, ${bet365.length} in window`);
+  console.log('Scraping The Odds API (best of 10 books) …');
+  const oddsAll = await scrapeOddsApi();
+  const odds = oddsAll.filter(inWindow);
+  console.log(`  → ${oddsAll.length} total, ${odds.length} in window`);
 
   // Match events across all 3 bookmaker pairs and collect arbs.
   console.log('Matching events across all pairs …');
-  const pairsVT  = matchEvents(vegas,  tipp  ).map(p => ({ a: p.vegas, b: p.tipp }));
-  const pairsBT  = matchEvents(bet365, tipp  ).map(p => ({ a: p.vegas, b: p.tipp }));
-  const pairsVB  = matchEvents(vegas,  bet365).map(p => ({ a: p.vegas, b: p.tipp }));
-  const allPairs = [...pairsVT, ...pairsBT, ...pairsVB];
-  console.log(`  → ${pairsVT.length} vegas/tipp  ${pairsBT.length} bet365/tipp  ${pairsVB.length} vegas/bet365`);
+  const pairsVT  = matchEvents(vegas, tipp).map(p => ({ a: p.vegas, b: p.tipp }));
+  const pairsOT  = matchEvents(odds,  tipp).map(p => ({ a: p.vegas, b: p.tipp }));
+  const pairsVO  = matchEvents(vegas, odds).map(p => ({ a: p.vegas, b: p.tipp }));
+  const allPairs = [...pairsVT, ...pairsOT, ...pairsVO];
+  console.log(`  → ${pairsVT.length} vegas/tipp  ${pairsOT.length} oddsapi/tipp  ${pairsVO.length} vegas/oddsapi`);
 
-  const allArbs = allPairs.flatMap(p => arbsBetween(p.a, p.b));
+  // Cross-source arbs from matched pairs + intra-oddsapi arbs (best Over at
+  // one book, best Under at another — no cross-source match needed).
+  const internalArbs = odds.flatMap(arbsWithinEvent);
+  if (internalArbs.length) console.log(`  → ${internalArbs.length} intra-oddsapi arbs`);
+  const allArbs = [...allPairs.flatMap(p => arbsBetween(p.a, p.b)), ...internalArbs];
   allArbs.sort((a, b) => b.profitPct - a.profitPct);
   const profitable = allArbs.filter(a => a.profitPct >= MIN_PROFIT_PCT);
   console.log(`  → ${profitable.length} arbs ≥ ${MIN_PROFIT_PCT}% profit; sending top ${Math.min(profitable.length, TOP_N)}`);
@@ -162,7 +203,7 @@ async function main() {
   await sendDiscord(DRY ? null : process.env.DISCORD_WEBHOOK_URL, {
     arbs: profitable.slice(0, TOP_N),
     summary: {
-      sources: { vegas: vegas.length, tippmixpro: tipp.length, bet365: bet365.length },
+      sources: { vegas: vegas.length, tippmixpro: tipp.length, oddsapi: odds.length },
       pairCount: allPairs.length,
       eligibleMarketCount: nearMisses.length,
       threshold: MIN_PROFIT_PCT,

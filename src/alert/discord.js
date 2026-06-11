@@ -25,7 +25,13 @@ export async function sendDiscord(webhookUrl, { arbs, summary }) {
   }
 }
 
-const BOOK_LABEL = { vegas: 'Vegas.hu', tippmixpro: 'Tippmixpro', bet365: 'bet365' };
+const BOOK_LABEL = {
+  vegas: 'Vegas.hu', tippmixpro: 'Tippmixpro', oddsapi: 'OddsAPI',
+  // Per-book attribution from the aggregated oddsapi source
+  pinnacle: 'Pinnacle', marathonbet: 'Marathonbet', williamhill: 'William Hill',
+  unibet_uk: 'Unibet', betsson: 'Betsson', nordicbet: 'NordicBet',
+  betvictor: 'BetVictor', betway: 'Betway', leovegas: 'LeoVegas', sport888: '888sport',
+};
 function bookName(raw) { return BOOK_LABEL[raw] ?? raw; }
 
 function buildArbMessages(arbs) {
