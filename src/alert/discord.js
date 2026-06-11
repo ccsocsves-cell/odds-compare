@@ -26,11 +26,7 @@ export async function sendDiscord(webhookUrl, { arbs, summary }) {
 }
 
 const BOOK_LABEL = {
-  vegas: 'Vegas.hu', tippmixpro: 'Tippmixpro', oddsapi: 'OddsAPI', boabet: 'Boabet',
-  // Per-book attribution from the aggregated oddsapi source
-  pinnacle: 'Pinnacle', marathonbet: 'Marathonbet', williamhill: 'William Hill',
-  unibet_uk: 'Unibet', betsson: 'Betsson', nordicbet: 'NordicBet',
-  betvictor: 'BetVictor', betway: 'Betway', leovegas: 'LeoVegas', sport888: '888sport',
+  vegas: 'Vegas.hu', tippmixpro: 'Tippmixpro', boabet: 'Boabet',
 };
 function bookName(raw) { return BOOK_LABEL[raw] ?? raw; }
 

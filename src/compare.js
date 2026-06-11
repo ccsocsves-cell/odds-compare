@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import { scrapeVegas } from './scrapers/vegas.js';
 import { scrapeTippmixpro } from './scrapers/tippmixpro.js';
-import { scrapeOddsApi } from './scrapers/oddsapi.js';
 import { scrapeBoabet } from './scrapers/boabet.js';
 import { matchEvents } from './normalize/events.js';
 import { sendDiscord } from './alert/discord.js';
@@ -49,9 +48,7 @@ function arbsBetween(vEvent, tEvent) {
     if (selections.length !== 2) continue;
     if (!selections.every(s => Number.isFinite(vm.odds[s]) && Number.isFinite(tm.odds[s]))) continue;
 
-    // Aggregated sources (oddsapi) carry per-selection book attribution in
-    // market.books — prefer that over the generic event source name.
-    const bookOf = (mkt, ev, sel) => mkt.books?.[sel] ?? ev.source;
+    const bookOf = (mkt, ev, sel) => ev.source;
     const [selA, selB] = selections;
     const bestA = vm.odds[selA] >= tm.odds[selA]
       ? { odds: vm.odds[selA], book: bookOf(vm, vEvent, selA) }
@@ -82,40 +79,6 @@ function arbsBetween(vEvent, tEvent) {
       totalStake: STAKE_BASE,
       guaranteedReturn,
       profitPct
-    });
-  }
-  return out;
-}
-
-// The oddsapi source aggregates 10 bookmakers, so a single event can carry
-// an internal arb (e.g. Over best at pinnacle, Under best at williamhill).
-// These don't need a cross-source match at all.
-function arbsWithinEvent(e) {
-  const out = [];
-  for (const mRaw of e.markets) {
-    const key = normalizedMarketKey(mRaw);
-    if (!TWO_LEG_MARKETS.has(key) || !mRaw.books) continue;
-    const sels = Object.keys(mRaw.odds);
-    if (sels.length !== 2) continue;
-    const [selA, selB] = sels;
-    if (!Number.isFinite(mRaw.odds[selA]) || !Number.isFinite(mRaw.odds[selB])) continue;
-    if (mRaw.books[selA] === mRaw.books[selB]) continue;
-
-    const totalImplied = 1 / mRaw.odds[selA] + 1 / mRaw.odds[selB];
-    if (totalImplied >= 1) continue;
-
-    out.push({
-      sport: e.sport,
-      home: e.home,
-      away: e.away,
-      league: e.league,
-      startUtc: e.startUtc,
-      market: key,
-      legA: { selection: selA, odds: mRaw.odds[selA], book: mRaw.books[selA], stake: (STAKE_BASE * (1 / mRaw.odds[selA])) / totalImplied },
-      legB: { selection: selB, odds: mRaw.odds[selB], book: mRaw.books[selB], stake: (STAKE_BASE * (1 / mRaw.odds[selB])) / totalImplied },
-      totalStake: STAKE_BASE,
-      guaranteedReturn: STAKE_BASE / totalImplied,
-      profitPct: (1 - totalImplied) / totalImplied * 100
     });
   }
   return out;
@@ -175,13 +138,12 @@ async function main() {
 
   const vegas = await scrapeSafe('vegas.hu', scrapeVegas);
   const tipp  = await scrapeSafe('tippmixpro.hu', scrapeTippmixpro);
-  const odds  = await scrapeSafe('The Odds API (best of 10 books)', scrapeOddsApi);
   const boa   = await scrapeSafe('boabet (Playwright)', scrapeBoabet);
 
   // Match events across every source pair and collect arbs.
   console.log('Matching events across all pairs …');
   const sources = [
-    ['vegas', vegas], ['tipp', tipp], ['oddsapi', odds], ['boabet', boa],
+    ['vegas', vegas], ['tipp', tipp], ['boabet', boa],
   ];
   const allPairs = [];
   const pairCounts = [];
@@ -197,11 +159,7 @@ async function main() {
   }
   console.log(`  → ${pairCounts.join('  ') || 'no source pair had events on both sides'}`);
 
-  // Cross-source arbs from matched pairs + intra-oddsapi arbs (best Over at
-  // one book, best Under at another — no cross-source match needed).
-  const internalArbs = odds.flatMap(arbsWithinEvent);
-  if (internalArbs.length) console.log(`  → ${internalArbs.length} intra-oddsapi arbs`);
-  const allArbs = [...allPairs.flatMap(p => arbsBetween(p.a, p.b)), ...internalArbs];
+  const allArbs = allPairs.flatMap(p => arbsBetween(p.a, p.b));
   allArbs.sort((a, b) => b.profitPct - a.profitPct);
   const profitable = allArbs.filter(a => a.profitPct >= MIN_PROFIT_PCT);
   console.log(`  → ${profitable.length} arbs ≥ ${MIN_PROFIT_PCT}% profit; sending top ${Math.min(profitable.length, TOP_N)}`);
@@ -220,7 +178,7 @@ async function main() {
   await sendDiscord(DRY ? null : process.env.DISCORD_WEBHOOK_URL, {
     arbs: profitable.slice(0, TOP_N),
     summary: {
-      sources: { vegas: vegas.length, tippmixpro: tipp.length, oddsapi: odds.length, boabet: boa.length },
+      sources: { vegas: vegas.length, tippmixpro: tipp.length, boabet: boa.length },
       pairCount: allPairs.length,
       eligibleMarketCount: nearMisses.length,
       threshold: MIN_PROFIT_PCT,

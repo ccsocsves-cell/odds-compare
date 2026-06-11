@@ -1,8 +1,7 @@
 name: Odds arbitrage scan
 
-# Manual-only by design (no cron): run via the /arbs Discord command or the
-# Actions "Run workflow" button. At ~2 runs/week the Odds API usage is
-# ~19 keys × 2 markets × 9 runs/mo ≈ 350 req/mo — fits even the free tier.
+# Runs on a cron schedule (denser during HU evening peak) plus manual
+# triggers: the /arbs Discord command or the Actions "Run workflow" button.
 on:
   workflow_dispatch:
     inputs:
@@ -61,7 +60,6 @@ jobs:
       - name: Run comparator
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           ALERT_THRESHOLD_PCT: '0.5'   # min guaranteed profit % for an arb alert
           ALERT_TOP_N: '10'
           STAKE_BASE: '100'            # bankroll unit used in Discord stake split
