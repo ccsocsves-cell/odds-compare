@@ -7,10 +7,13 @@ import { canonicalMarketKey, canonicalSelection } from '../normalize/markets.js'
 // through 3 casino-affiliate redirects). Tech stack: Digitain (per the
 // `digitain-widgets.*.js` bundle observed in the diagnostic). Mirror list
 // in case the -39- counter rotates.
+// Route discovered from the landing-page nav (2026-06-11): the sportsbook
+// lives under /en/sports/sportsbook — the old /en/sport path 404s in-app.
+// The -NN- mirror counter rotates but old counters 307 to the current one.
 const MIRRORS = [
-  'https://play.boabet-39-eu.com/en/sport',
-  'https://play.boabet-39-eu.com/en',
-  'https://www.boabet.com/'
+  'https://play.boabet-39-eu.com/en/sports/sportsbook/overview',
+  'https://play.boabet-39-eu.com/en/sports/sportsbook',
+  'https://www.boabet.com/en/sports/sportsbook/overview'
 ];
 const SAMPLE_DIR = 'data/samples';
 const SAVE_SAMPLES = process.env.SAVE_SAMPLES === '1';
