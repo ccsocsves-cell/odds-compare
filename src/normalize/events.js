@@ -47,6 +47,55 @@ export function canonicalSport(rawName) {
 
 const START_TOL_MS = 30 * 60 * 1000;
 
+// Bigram Dice similarity — enough to decide which of two name orderings
+// lines up better (full fuzzy matching stays Fuse's job).
+function dice(a, b) {
+  a = String(a).toLowerCase();
+  b = String(b).toLowerCase();
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const grams = s => {
+    const m = new Map();
+    for (let i = 0; i < s.length - 1; i++) {
+      const g = s.slice(i, i + 2);
+      m.set(g, (m.get(g) || 0) + 1);
+    }
+    return m;
+  };
+  const A = grams(a);
+  const B = grams(b);
+  let inter = 0;
+  for (const [g, c] of A) if (B.has(g)) inter += Math.min(c, B.get(g));
+  return (2 * inter) / (a.length - 1 + b.length - 1);
+}
+
+// Some books list certain events in the opposite home/away order (e.g.
+// boabet/Digitain shows US-league games away-first while vegas/Altenar is
+// home-first). The fuzzy matcher pairs them anyway, but the '1'/'2'
+// selections would then refer to opposite teams — which fabricates huge
+// fake "arbs". Detect the flip by name similarity and reorient the event.
+function isFlipped(aHome, aAway, bHome, bAway) {
+  const straight = dice(aHome, bHome) + dice(aAway, bAway);
+  const crossed = dice(aHome, bAway) + dice(aAway, bHome);
+  return crossed > straight;
+}
+
+function flipEvent(e) {
+  const swap = obj => {
+    if (!obj || !('1' in obj || '2' in obj)) return obj;
+    const out = { ...obj, 1: obj['2'], 2: obj['1'] };
+    if (out['1'] === undefined) delete out['1'];
+    if (out['2'] === undefined) delete out['2'];
+    return out;
+  };
+  return {
+    ...e,
+    home: e.away,
+    away: e.home,
+    markets: (e.markets || []).map(m => ({ ...m, odds: swap(m.odds), books: swap(m.books) })),
+  };
+}
+
 export function matchEvents(vegasEvents, tippEvents) {
   const pairs = [];
   const used = new Set();
@@ -79,7 +128,10 @@ export function matchEvents(vegasEvents, tippEvents) {
     if (!top) continue;
 
     used.add(top.item.bookId);
-    pairs.push({ vegas: v, tipp: top.item });
+    const t = isFlipped(vHome, vAway, top.item.homeA, top.item.awayA)
+      ? flipEvent(top.item)
+      : top.item;
+    pairs.push({ vegas: v, tipp: t });
   }
   return pairs;
 }

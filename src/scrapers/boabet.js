@@ -56,14 +56,34 @@ async function scrapeOne(entryUrl) {
 
   const payloads = [];
   page.on('response', async res => {
+    const url = res.url();
+    // Digitain (sport.dgiframe.com) serves its odds JSON with
+    // content-type: text/html and a light XOR obfuscation — a content-type
+    // filter silently drops every odds payload (root cause of 0 records
+    // through 2026-06-11). Capture everything from the sportsbook backends
+    // and let decodeDigitain() sort it out.
+    if (/dgiframe|sportdigi/i.test(url)) {
+      if (/\.(png|jpg|jpeg|gif|svg|webp|woff2?|css|ttf|ico|mp4|webm|js)(\?|$)/i.test(url)) return;
+      try {
+        const json = decodeDigitain(await res.body());
+        if (json) payloads.push({ url, json });
+      } catch {}
+      return;
+    }
     const ct = res.headers()['content-type'] || '';
     if (!ct.includes('json')) return;
-    const url = res.url();
     if (!/sport|event|odd|prematch|upcoming|market|fixture|digitain|widget|champ|competition/i.test(url)) return;
     try {
       const json = await res.json();
       payloads.push({ url, json });
     } catch {}
+  });
+
+  // Remember a real gettopeventslist request so per-sport refetches reuse the
+  // exact same query params (langId/partnerId/countryCode/stakeTypes).
+  let topEventsTpl = null;
+  page.on('request', req => {
+    if (!topEventsTpl && /gettopeventslist/i.test(req.url())) topEventsTpl = req.url();
   });
 
   // Digitain sportsbooks push odds over SignalR WebSockets, invisible to
@@ -108,6 +128,11 @@ async function scrapeOne(entryUrl) {
       await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
       await page.waitForTimeout(15000);
     }
+
+    // The pre-match page only auto-loads Football's top events. Pull the
+    // other sports' lists directly from inside the Digitain iframe (same
+    // origin/cookies, so the Cloudflare + bot checks already passed).
+    await fetchTopEventsPerSport(page, topEventsTpl, payloads);
 
     finalUrl = page.url();
     title = await page.title().catch(() => '');
@@ -167,22 +192,156 @@ function writeSamples(prefix, payloads) {
   );
 }
 
-// Boabet's backend shape is unknown until the first capture. This parser tries
-// several common shapes (Altenar, Kambi, Betradar, generic). After the first
-// run with SAVE_SAMPLES=1, refine the heuristics here based on the captured JSON.
+// Digitain sport ids confirmed via prematch/getsportswithcount (2026-06-11).
+// Only sports the other sources also carry are worth fetching.
+const DIGITAIN_SPORTS = {
+  1: 'Football',
+  3: 'Tennis',
+  4: 'Basketball',
+  5: 'Baseball',
+  10: 'Ice Hockey',
+  12: 'Volleyball',
+  13: 'Handball'
+};
+
+async function fetchTopEventsPerSport(page, tplUrl, payloads) {
+  const frame = page.frames().find(f => /dgiframe\.com\/.+\/SportsBook/i.test(f.url()));
+  if (!frame) {
+    console.warn('  boabet: Digitain iframe not found — skipping per-sport fetch');
+    return;
+  }
+  if (!tplUrl) {
+    // No organic request observed — build one from the iframe URL (the GUID
+    // path segment is the partner system id) with the params seen in capture.
+    const u = new URL(frame.url());
+    const guid = u.pathname.split('/')[1];
+    tplUrl = `${u.origin}/${guid}/prematch/gettopeventslist?sportId=1&stakeTypes=1&stakeTypes=702&stakeTypes=2&stakeTypes=3&stakeTypes=992&stakeTypes=46&langId=2&partnerId=749&countryCode=HU`;
+  }
+  for (const [sportId, name] of Object.entries(DIGITAIN_SPORTS)) {
+    const url = tplUrl.replace(/sportId=\d+/, `sportId=${sportId}`);
+    // fetch() inside the frame → response also lands in page.on('response'),
+    // but grab it directly so a slow listener can't race browser.close().
+    const b64 = await frame.evaluate(async u => {
+      try {
+        const r = await fetch(u, { credentials: 'include' });
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        let s = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        return btoa(s);
+      } catch { return null; }
+    }, url).catch(() => null);
+    if (!b64) continue;
+    const json = decodeDigitain(Buffer.from(b64, 'base64'));
+    if (json) {
+      console.log(`  boabet ${name}: ${Array.isArray(json) ? json.length : '?'} top events`);
+      payloads.push({ url, json });
+    }
+  }
+}
+
+// Digitain obfuscates JSON bodies: the stream is split into 8192-byte chunks,
+// each prefixed with one marker byte, and the rest is XORed with a single-byte
+// key. Derive the key from the first data byte (JSON starts with '[' or '{').
+function decodeDigitain(buf) {
+  if (!buf || !buf.length) return null;
+  try { return JSON.parse(buf.toString('utf8')); } catch {}
+  const marker = buf[0];
+  const data = [];
+  for (let i = 0; i < buf.length; i++) {
+    if (i % 8192 === 0) {
+      if (buf[i] !== marker) return null;
+      continue;
+    }
+    data.push(buf[i]);
+  }
+  if (!data.length) return null;
+  for (const open of [0x5b, 0x7b]) { // '[' / '{'
+    const key = data[0] ^ open;
+    try { return JSON.parse(Buffer.from(data.map(c => c ^ key)).toString('utf8')); } catch {}
+  }
+  return null;
+}
+
+// Payloads are either Digitain event lists (gettopeventslist & friends) or
+// the odd generic JSON; try the Digitain shape first, generic second.
 function parseBoabetPayloads(payloads) {
   const events = [];
   for (const { json } of payloads) {
     for (const raw of guessEventList(json)) {
-      const parsed = parseGenericEvent(raw);
+      const parsed = parseDigitainEvent(raw) ?? parseGenericEvent(raw);
       if (parsed) events.push(parsed);
     }
   }
   return dedupeById(events);
 }
 
+// Digitain pre-match event: { Id, HT, AT, SN, CN, D, StakeTypes: [{ N,
+// Stakes: [{ N, SC, A, F }] }] }. SC: 1=home, 2=draw, 3=away. A = line
+// argument (totals/handicaps). F = decimal price.
+function parseDigitainEvent(e) {
+  if (!e || typeof e !== 'object') return null;
+  if (!e.Id || !e.HT || !e.AT || !e.D || !Array.isArray(e.StakeTypes)) return null;
+
+  const markets = [];
+  const seen = new Set();
+  for (const st of e.StakeTypes) {
+    const stakes = Array.isArray(st.Stakes) ? st.Stakes : [];
+    if (!stakes.length) continue;
+
+    if (/^(result|winner|match winner)$/i.test(st.N || '')) {
+      // Selections are named after the teams; 'X' marks the draw. SC codes
+      // are positional fallbacks: 1/2/3 = home/draw/away in 3-way markets
+      // but 1/2 = home/away in 2-way ones (tennis, baseball, …).
+      const threeWay = stakes.length === 3;
+      const odds = {};
+      for (const s of stakes) {
+        const sel =
+          s.N === e.HT ? '1'
+          : s.N === e.AT ? '2'
+          : s.N === 'X' || /^draw$/i.test(s.N || '') ? 'X'
+          : s.SC === 1 ? '1'
+          : s.SC === 2 ? (threeWay ? 'X' : '2')
+          : s.SC === 3 ? '2'
+          : null;
+        if (sel && Number.isFinite(s.F) && s.F > 1) odds[sel] = s.F;
+      }
+      // 3 selections → 1x2; 2 (no draw posted) → winner
+      const key = 'X' in odds ? '1x2' : 'winner';
+      const complete = key === '1x2' ? odds['1'] && odds['2'] && odds['X'] : odds['1'] && odds['2'];
+      if (complete && !seen.has(key)) {
+        seen.add(key);
+        markets.push({ key, odds });
+      }
+    }
+
+    // Exactly 'Total' = match goals. 'Total Games'/'Total Points'/… are
+    // different units and must not feed the goals-based ou_2.5 market.
+    if (/^total$/i.test(st.N || '')) {
+      const over = stakes.find(s => /^over$/i.test(s.N || '') && Math.abs(Number(s.A) - 2.5) < 0.01);
+      const under = stakes.find(s => /^under$/i.test(s.N || '') && Math.abs(Number(s.A) - 2.5) < 0.01);
+      if (over?.F > 1 && under?.F > 1 && !seen.has('ou_2.5')) {
+        seen.add('ou_2.5');
+        markets.push({ key: 'ou_2.5', odds: { over: over.F, under: under.F } });
+      }
+    }
+  }
+  if (!markets.length) return null;
+
+  return {
+    bookId: `boabet-${e.Id}`,
+    source: 'boabet',
+    sport: e.SN || 'unknown',
+    league: e.CN || '',
+    home: e.HT,
+    away: e.AT,
+    startUtc: new Date(e.D).toISOString(),
+    markets
+  };
+}
+
 function guessEventList(json) {
   if (!json || typeof json !== 'object') return [];
+  if (Array.isArray(json)) return json;
   const candidates = [
     json.Events, json.events,
     json.Result?.Events, json.result?.events,
