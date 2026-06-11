@@ -60,17 +60,51 @@ async function scrapeOne(entryUrl) {
     } catch {}
   });
 
+  // Digitain sportsbooks push odds over SignalR WebSockets, invisible to
+  // page.on('response') — capture frames too.
+  const wsFrames = [];
+  page.on('websocket', ws => {
+    const grab = ev => ev.payload && wsFrames.push({ url: ws.url(), payload: String(ev.payload).slice(0, 500_000) });
+    ws.on('framereceived', grab);
+  });
+
   try {
     await page.goto(entryUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
     // Boabet's sportsbook iframe takes a moment to negotiate auth + fetch odds
-    await page.waitForTimeout(12000);
+    await page.waitForTimeout(20000);
   } finally {
     await browser.close();
   }
 
-  if (SAVE_SAMPLES) writeSamples('boabet', payloads);
-  return parseBoabetPayloads(payloads);
+  console.log(`  boabet ${entryUrl}: ${payloads.length} json payloads, ${wsFrames.length} ws frames captured`);
+  if (SAVE_SAMPLES) {
+    writeSamples('boabet', payloads);
+    writeWsFrames('boabet', wsFrames);
+  }
+  return parseBoabetPayloads([...payloads, ...wsFramesAsPayloads(wsFrames)]);
+}
+
+// SignalR frames are JSON messages separated by \x1e; try to parse each part
+// so the generic payload parser gets a shot at them too.
+function wsFramesAsPayloads(wsFrames) {
+  const out = [];
+  for (const f of wsFrames) {
+    for (const part of f.payload.split('')) {
+      if (!part.trim().startsWith('{') && !part.trim().startsWith('[')) continue;
+      try { out.push({ url: f.url, json: JSON.parse(part) }); } catch {}
+    }
+  }
+  return out;
+}
+
+function writeWsFrames(prefix, wsFrames) {
+  if (!wsFrames.length) return;
+  fs.mkdirSync(SAMPLE_DIR, { recursive: true });
+  fs.writeFileSync(
+    path.join(SAMPLE_DIR, `${prefix}-ws-frames.jsonl`),
+    wsFrames.map(f => JSON.stringify(f)).join('\n')
+  );
 }
 
 function writeSamples(prefix, payloads) {

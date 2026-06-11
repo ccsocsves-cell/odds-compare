@@ -5,6 +5,11 @@ name: Odds arbitrage scan
 # ~19 keys × 2 markets × 9 runs/mo ≈ 350 req/mo — fits even the free tier.
 on:
   workflow_dispatch:
+    inputs:
+      debug_boabet:
+        description: Save boabet network captures and upload as artifact
+        type: boolean
+        default: false
   # Triggered remotely by the Discord bot (discord-bot/worker.js) via
   # POST /repos/{owner}/{repo}/dispatches with event_type=run-arbs.
   repository_dispatch:
@@ -60,7 +65,16 @@ jobs:
           ALERT_THRESHOLD_PCT: '0.5'   # min guaranteed profit % for an arb alert
           ALERT_TOP_N: '10'
           STAKE_BASE: '100'            # bankroll unit used in Discord stake split
+          SAVE_SAMPLES: ${{ inputs.debug_boabet && '1' || '0' }}
         run: npm run compare
+
+      - name: Upload boabet captures
+        if: ${{ always() && inputs.debug_boabet }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boabet-samples
+          path: data/samples/
+          if-no-files-found: warn
 
       - name: Disconnect NordVPN
         if: always()
