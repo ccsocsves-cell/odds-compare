@@ -72,8 +72,19 @@ async function scrapeOne(entryUrl) {
   try {
     await page.goto(entryUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
-    // Boabet's sportsbook iframe takes a moment to negotiate auth + fetch odds
-    await page.waitForTimeout(20000);
+
+    // A OneTrust consent banner blocks the page until accepted — the
+    // sportsbook fragment never initializes behind it (verified via HTML
+    // snapshot: #onetrust-banner-sdk present, no sportsbook iframe).
+    const consent = page.locator('#onetrust-accept-btn-handler');
+    if (await consent.count().catch(() => 0)) {
+      await consent.first().click({ timeout: 5000 }).catch(() => {});
+      console.log('  boabet: accepted OneTrust consent banner');
+      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+    }
+
+    // Boabet's sportsbook fragment takes a moment to negotiate auth + fetch odds
+    await page.waitForTimeout(25000);
     finalUrl = page.url();
     title = await page.title().catch(() => '');
     if (SAVE_SAMPLES) html = await page.content().catch(() => '');
