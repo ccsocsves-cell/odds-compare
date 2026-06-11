@@ -34,8 +34,11 @@ export async function scrapeBoabet() {
 }
 
 async function scrapeOne(entryUrl) {
+  // Digitain's dgiframe host runs a bot validation that rejects headless
+  // Chromium. BOABET_HEADED=1 launches a real (headed) browser — in CI,
+  // wrap the run in xvfb-run to provide a display.
   const browser = await chromium.launch({
-    headless: true,
+    headless: process.env.BOABET_HEADED !== '1',
     args: ['--disable-blink-features=AutomationControlled']
   });
   const ctx = await browser.newContext({
@@ -84,6 +87,13 @@ async function scrapeOne(entryUrl) {
       await consent.first().click({ timeout: 5000 }).catch(() => {});
       console.log('  boabet: accepted OneTrust consent banner');
       await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+    }
+
+    // Digitain's validation page ("Egy pillanat…") redirects back to the
+    // sportsbook once its checks pass — give it time before sampling.
+    if (page.url().includes('/Error/Validate')) {
+      console.log('  boabet: waiting out dgiframe bot validation …');
+      await page.waitForURL(u => !String(u).includes('/Error/Validate'), { timeout: 30000 }).catch(() => {});
     }
 
     // Boabet's sportsbook fragment takes a moment to negotiate auth + fetch odds
