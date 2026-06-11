@@ -67,7 +67,29 @@ export async function scrapeBet365() {
     console.log(`  bet365 ${sportKey}: ${events.length} events`);
     all.push(...events);
   }
+
+  // Every sport parsed to 0 events: either the API returned no events at
+  // all, or events came back without a bet365 bookmaker entry. Spend one
+  // extra request on an unfiltered query so the log shows which bookmaker
+  // keys ARE available — tells us if "bet365" was dropped from coverage.
+  if (!all.length && selected.length) {
+    await diagnoseEmpty(selected[0].key);
+  }
   return all;
+}
+
+async function diagnoseEmpty(sportKey) {
+  try {
+    const res = await axios.get(`${BASE}/sports/${sportKey}/odds/`, {
+      params: { apiKey: KEY, regions: 'eu,uk', markets: 'h2h', oddsFormat: 'decimal' },
+      timeout: 15_000,
+    });
+    const events = res.data || [];
+    const books = [...new Set(events.flatMap(e => (e.bookmakers || []).map(b => b.key)))].sort();
+    console.warn(`  [bet365] DIAG ${sportKey} unfiltered: ${events.length} events; bookmaker keys: ${books.join(', ') || '(none)'}`);
+  } catch (err) {
+    console.warn(`  [bet365] DIAG failed: ${err.response?.status ?? ''} ${err.message}`);
+  }
 }
 
 // GET /v4/sports is free (does not count against the request quota) and
