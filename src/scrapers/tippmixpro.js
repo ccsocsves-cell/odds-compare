@@ -48,10 +48,10 @@ const SPORT_MGOS = {
   49: { name: 'Futsal',                   mgos: [697, 698] }                // 1X2, O/U
 };
 
-// How many matches to request per sport. The aggregator caps somewhere
-// between 200 and 500 in practice; 200 was the safe, observed-working value,
-// but football/tennis hit that cap so we default higher. Override via env if
-// the aggregator starts erroring on the larger request.
+// How many matches to request per sport. NOTE: the aggregator hard-caps at
+// 200 server-side — run 27337961405 requested 300 and still got exactly 200
+// for football/tennis. Requesting more is harmless but does nothing; getting
+// past 200 would need a different topic (e.g. per-league queries).
 const MATCHES_PER_SPORT = Number(process.env.TIPPMIX_MATCHES_PER_SPORT ?? 300);
 
 const WAMP_SESSION_TIMEOUT_MS = 120000;
