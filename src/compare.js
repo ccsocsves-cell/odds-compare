@@ -155,33 +155,28 @@ function nearArbOverview(pairs) {
   return rows;
 }
 
+// One failing scraper (transient DNS, dead mirror, rotated MGO IDs…) must
+// not abort the whole scan — the remaining sources can still find arbs.
+async function scrapeSafe(label, fn) {
+  console.log(`Scraping ${label} …`);
+  let all = [];
+  try {
+    all = await fn();
+  } catch (err) {
+    console.warn(`  [${label}] scrape FAILED, continuing without it: ${err.message}`);
+  }
+  const windowed = all.filter(inWindow);
+  console.log(`  → ${all.length} total, ${windowed.length} in window`);
+  return windowed;
+}
+
 async function main() {
   console.log(`Window: ${new Date(WINDOW_MIN_MS).toISOString()} → ${new Date(WINDOW_MAX_MS).toISOString()}`);
 
-  console.log('Scraping vegas.hu …');
-  const vegasAll = await scrapeVegas();
-  const vegas = vegasAll.filter(inWindow);
-  console.log(`  → ${vegasAll.length} total, ${vegas.length} in window`);
-
-  console.log('Scraping tippmixpro.hu …');
-  const tippAll = await scrapeTippmixpro();
-  const tipp = tippAll.filter(inWindow);
-  console.log(`  → ${tippAll.length} total, ${tipp.length} in window`);
-
-  console.log('Scraping The Odds API (best of 10 books) …');
-  const oddsAll = await scrapeOddsApi();
-  const odds = oddsAll.filter(inWindow);
-  console.log(`  → ${oddsAll.length} total, ${odds.length} in window`);
-
-  console.log('Scraping boabet (Playwright) …');
-  let boaAll = [];
-  try {
-    boaAll = await scrapeBoabet();
-  } catch (err) {
-    console.warn(`  [boabet] scrape failed: ${err.message}`);
-  }
-  const boa = boaAll.filter(inWindow);
-  console.log(`  → ${boaAll.length} total, ${boa.length} in window`);
+  const vegas = await scrapeSafe('vegas.hu', scrapeVegas);
+  const tipp  = await scrapeSafe('tippmixpro.hu', scrapeTippmixpro);
+  const odds  = await scrapeSafe('The Odds API (best of 10 books)', scrapeOddsApi);
+  const boa   = await scrapeSafe('boabet (Playwright)', scrapeBoabet);
 
   // Match events across every source pair and collect arbs.
   console.log('Matching events across all pairs …');
