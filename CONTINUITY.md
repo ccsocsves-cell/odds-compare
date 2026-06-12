@@ -27,7 +27,9 @@ Everything else (workflow, Discord bot, secrets) already works in the cloud.
 
 ## Resuming as "use it from Discord" — nothing to do
 
-Type `/arbs` in your Discord server from any device. The Cloudflare Worker triggers GitHub Actions, which scrapes both books through NordVPN HU and posts the result to your Discord channel. No PC needed.
+The workflow now also runs on **cron** (every 20 min during 14–21 UTC, hourly off-peak, daily heartbeat at 8:07 UTC) and posts to Discord **only when it finds fresh arbs** — silence means "scanned, nothing actionable", and the daily heartbeat confirms the pipeline is alive. `/arbs` in Discord still forces an immediate scan from any device. No PC needed.
+
+The repo is **public** (that's what makes unlimited Actions minutes free). Secrets stay in GH/Worker secret stores; `keepalive.yml` pushes an empty commit twice a month so GitHub never auto-disables the schedules.
 
 ## Local `.env`
 
@@ -81,12 +83,16 @@ Both commands prompt for the value (input hidden), so values never appear in she
                           [GitHub API]
                               │ triggers workflow
                               ▼
-                  [GitHub Actions runner]
-                              │ npx wrangler / nordvpn / node
+                  [GitHub Actions runner]   (also fired by cron schedules)
+                              │ nordvpn HU / node
                               │ scrapes vegas.hu (Altenar HTTP)
                               │ scrapes tippmixpro.hu (WAMP v2 WebSocket)
-                              │ matches events, finds 2-leg arbs
-                              │ POSTs results to Discord webhook
+                              │ scrapes 22bet (1xCorp LineFeed HTTP)
+                              │ scrapes boabet (Digitain, Playwright; ENABLE_BOABET gate)
+                              │ clusters events across books, arbs best-of-cluster
+                              │ (2-leg winner/btts/ou_2.5 + 3-leg 1x2)
+                              │ dedups vs data/seen-arbs.json (actions/cache)
+                              │ POSTs only fresh arbs to Discord webhook
                               ▼
                        [Discord channel]
 ```
@@ -97,10 +103,14 @@ Both commands prompt for the value (input hidden), so values never appear in she
 |------|---------|
 | `src/scrapers/vegas.js` | Altenar GetUpcoming → events with 1x2 + Total + GG/NG markets |
 | `src/scrapers/tippmixpro.js` | WAMP v2 client; per-sport aggregator with discovered MGO IDs |
-| `src/normalize/events.js` | Sport canonicalization (EN ↔ HU) + Fuse.js team match |
+| `src/scrapers/twentytwobet.js` | 22bet 1xCorp LineFeed; mirror auto-discovery, WAF param-order quirk, throttle |
+| `src/scrapers/boabet.js` | Digitain via headed Playwright + XOR decode; `ENABLE_BOABET` gate |
+| `src/normalize/events.js` | Sport canonicalization (EN ↔ HU), Fuse.js team match, N-way `clusterEvents` |
 | `src/normalize/markets.js` | Canonical market key/selection mapper |
-| `src/compare.js` | Orchestrator: scrape both, match, find arbs, send |
+| `src/compare.js` | Orchestrator: scrape all, cluster, arb best-of-cluster, dedup, send |
 | `src/alert/discord.js` | Webhook post formatter (arb messages + status summary) |
+| `src/alert/dedup.js` | Cross-run alert dedup (seen-arbs store) |
+| `test/unit.test.js` | `npm test` — clustering / arb math / dedup |
 | `data/overrides.json` | HU country → EN team name aliases (~80 entries) |
 | `discord-bot/worker.js` | Cloudflare Worker that handles `/arbs` |
 | `discord-bot/SETUP.md` | One-time deployment guide for the Worker + bot |
