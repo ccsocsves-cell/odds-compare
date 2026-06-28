@@ -1,0 +1,63 @@
+name: Refresh TippMixPro MGO IDs
+
+# Runs weekly to check for MGO ID rotation on tippmixpro. If IDs changed,
+# commits the updated data/sport-mgos.json and notifies Discord.
+on:
+  schedule:
+    - cron: '15 6 * * 1'  # Every Monday 06:15 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install NordVPN CLI
+        run: |
+          curl -sSf https://downloads.nordcdn.com/apps/linux/install.sh | sh
+          sudo usermod -aG nordvpn $USER
+
+      - name: Connect NordVPN to Hungary
+        env:
+          NORDVPN_TOKEN: ${{ secrets.NORDVPN_TOKEN }}
+        run: |
+          sudo nordvpn login --token "$NORDVPN_TOKEN"
+          sudo nordvpn set technology nordlynx
+          sudo nordvpn connect hu
+
+      - name: Discover MGO IDs
+        run: node src/discover-mgos.js
+
+      - name: Commit and notify if MGOs changed
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add data/sport-mgos.json
+          if git diff --cached --quiet; then
+            echo "MGO IDs unchanged — nothing to commit"
+          else
+            git commit -m "chore: refresh TippMixPro MGO IDs [skip ci]"
+            git push
+            curl -s -X POST "$DISCORD_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d '{"content": "**[MGO Refresh]** TippMixPro MGO IDs rotated — updated and committed to repo."}'
+          fi
+
+      - name: Disconnect NordVPN
+        if: always()
+        run: sudo nordvpn disconnect || true
