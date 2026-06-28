@@ -30,23 +30,11 @@ const MARKET_KEY_BY_BETTING_TYPE = {
   47: 'ou_2.5' // only kept when MARKET line is 2.5 - see parser
 };
 
-// Per-sport Market Group Overview (MGO) IDs, discovered via src/probe-mgo-fine.js
-// and src/probe-mgo-wide.js. The aggregator-groups-overview topic returns
-// matches+markets when called with valid MGO IDs for that sport. Including
-// more MGOs gives more market coverage; we list the ones that produce the
-// canonical markets compare.js cares about (1X2, winner/Ki nyeri?, O/U, BTTS).
-const SPORT_MGOS = {
-  1:  { name: 'Labdarúgás (Football)',    mgos: [1380, 1381, 1382, 1383] }, // 1X2, O/U, BTTS, double-chance
-  3:  { name: 'Tenisz (Tennis)',          mgos: [2369, 2370] },             // winner, game totals
-  6:  { name: 'Jégkorong (Hockey)',       mgos: [559, 560, 561] },          // 1X2, O/U, winner
-  7:  { name: 'Kézilabda (Handball)',     mgos: [565, 566] },               // 1X2, O/U
-  8:  { name: 'Kosárlabda (Basketball)',  mgos: [570, 571, 573] },          // winner, points-total, 1X2
-  9:  { name: 'Baseball',                 mgos: [574, 575, 577] },          // winner, points-total, 1X2
-  20: { name: 'Röplabda (Volleyball)',    mgos: [579, 580] },               // winner, points-total
-  22: { name: 'Vízilabda (Waterpolo)',    mgos: [582, 583, 586] },          // 1X2, O/U, winner
-  28: { name: 'Rögbi (Rugby)',            mgos: [707, 708, 710] },          // 1X2, points, winner
-  49: { name: 'Futsal',                   mgos: [697, 698] }                // 1X2, O/U
-};
+// MGO IDs are stored in data/sport-mgos.json and refreshed weekly by the
+// refresh-mgos workflow. Run `node src/discover-mgos.js` to update manually.
+const SPORT_MGOS = JSON.parse(
+  fs.readFileSync(new URL('../../data/sport-mgos.json', import.meta.url), 'utf8')
+);
 
 // How many matches to request per sport. NOTE: the aggregator hard-caps at
 // 200 server-side — run 27337961405 requested 300 and still got exactly 200
@@ -61,20 +49,38 @@ export async function scrapeTippmixpro() {
     const collected = [];
     const entries = Object.entries(SPORT_MGOS);
 
-    console.log(`  tippmixpro: fetching ${entries.length} sports in parallel …`);
+    console.log(`  tippmixpro: fetching ${entries.length} sports in parallel (one call per MGO) …`);
     const results = await Promise.all(
       entries.map(async ([sportId, { name, mgos }]) => {
-        const topic = `/sports/${PARTNER}/${LANG}/highlighted-popular-matches-aggregator-groups-overview/${sportId}/${MATCHES_PER_SPORT}/${mgos.join(',')}/default-event-info/or1.0-100.0`;
-        try {
-          const r = await call(topic);
-          const matches = r.filter(x => x._type === 'MATCH').length;
-          const markets = r.filter(x => x._type === 'MARKET').length;
-          console.log(`    sport ${sportId.padStart(2)} ${name.padEnd(28)} ${matches.toString().padStart(4)} matches, ${markets.toString().padStart(4)} markets`);
-          return r;
-        } catch (err) {
-          console.warn(`    sport ${sportId} (${name}) failed: ${err.message}`);
-          return [];
+        // One WAMP call per MGO so each gets its own 200-event server-side cap,
+        // multiplying total coverage by the number of MGOs for that sport.
+        const mgoResults = await Promise.all(
+          mgos.map(async mgo => {
+            const topic = `/sports/${PARTNER}/${LANG}/highlighted-popular-matches-aggregator-groups-overview/${sportId}/${MATCHES_PER_SPORT}/${mgo}/default-event-info/or1.0-100.0`;
+            try {
+              return await call(topic);
+            } catch (err) {
+              console.warn(`    sport ${sportId} mgo ${mgo} failed: ${err.message}`);
+              return [];
+            }
+          })
+        );
+        // Merge records; deduplicate MATCH records by ID across MGO responses.
+        const seenMatchIds = new Set();
+        const sportRecords = [];
+        for (const batch of mgoResults) {
+          for (const rec of batch) {
+            if (rec._type === 'MATCH') {
+              if (seenMatchIds.has(String(rec.id))) continue;
+              seenMatchIds.add(String(rec.id));
+            }
+            sportRecords.push(rec);
+          }
         }
+        const matches = sportRecords.filter(x => x._type === 'MATCH').length;
+        const markets = sportRecords.filter(x => x._type === 'MARKET').length;
+        console.log(`    sport ${sportId.padStart(2)} ${name.padEnd(28)} ${matches.toString().padStart(4)} matches, ${markets.toString().padStart(4)} markets`);
+        return sportRecords;
       })
     );
     for (const r of results) collected.push(...r);

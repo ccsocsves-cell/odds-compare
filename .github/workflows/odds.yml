@@ -43,10 +43,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Chromium for the boabet scraper (Playwright). The other scrapers are
-      # plain HTTP/WebSocket and don't need a browser.
+      # Chromium for the boabet scraper (Playwright). Cache the binary
+      # (~130MB) keyed on package-lock so it's only re-downloaded when
+      # Playwright itself updates.
+      - name: Cache Playwright Chromium
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ hashFiles('package-lock.json') }}
+
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
 
       # Cross-run alert dedup state. Cache entries are immutable, so save
       # under a unique key and restore the newest via the prefix.

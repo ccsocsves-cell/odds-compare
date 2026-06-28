@@ -9,6 +9,7 @@
 // MGO IDs for that sport. The MGO IDs vary by sport and are not in any
 // documented endpoint, so we probe a wide candidate range and accept whatever
 // MGOs come back as MARKET_GROUP_OVERVIEW records.
+import fs from 'node:fs';
 import { WebSocket } from 'ws';
 
 const PARTNER = '2901', LANG = 'hu', REALM = 'www.tippmixpro.hu';
@@ -58,12 +59,22 @@ ws.on('message', async raw => {
 });
 
 function report() {
-  console.log('\n=== MGO IDs per sport (paste into SPORT_MGOS in tippmixpro.js) ===\n');
+  console.log('\n=== MGO IDs per sport ===\n');
+  let existing = {};
+  try { existing = JSON.parse(fs.readFileSync('data/sport-mgos.json', 'utf8')); } catch {}
+  const output = {};
   for (const [sport, mgos] of mgosPerSport) {
     mgos.sort((a,b) => Number(a.pos) - Number(b.pos));
-    console.log(`sport ${sport}: ${mgos.length} MGOs`);
+    console.log(`sport ${sport}: ${mgos.length} MGOs found`);
     for (const m of mgos) console.log(`  ${String(m.id).padStart(6)}  pos=${m.pos}  ${m.name}`);
+    output[String(sport)] = {
+      name: existing[String(sport)]?.name || `sport_${sport}`,
+      mgos: mgos.map(m => m.id)
+    };
   }
+  fs.mkdirSync('data', { recursive: true });
+  fs.writeFileSync('data/sport-mgos.json', JSON.stringify(output, null, 2) + '\n');
+  console.log('\nWrote data/sport-mgos.json');
 }
 
 ws.on('error', err => { console.error(err); process.exit(1); });

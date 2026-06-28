@@ -192,6 +192,15 @@ async function main() {
   const top = profitable.slice(0, TOP_N);
   const seen = loadSeen(SEEN_PATH);
   pruneSeen(seen);
+
+  // BoaBet health tracking: alert after 5 consecutive zero-result runs so
+  // a silent block or bot-wall rotation doesn't go unnoticed for days.
+  if (!seen._meta) seen._meta = {};
+  const boaEmpty = boa.length === 0 && process.env.ENABLE_BOABET !== '0';
+  seen._meta.boabetFailStreak = boaEmpty ? (seen._meta.boabetFailStreak ?? 0) + 1 : 0;
+  const boaHealthWarn = !DRY && boaEmpty && seen._meta.boabetFailStreak >= 5;
+  if (boaHealthWarn) console.warn(`  [boabet] zero-event streak: ${seen._meta.boabetFailStreak} runs — posting health warning`);
+
   const fresh = DRY ? top : filterNew(top, seen, DEDUP_IMPROVE_PCT);
   if (top.length && !fresh.length) {
     console.log(`  → all ${top.length} arbs already alerted in a previous run (dedup)`);
@@ -211,9 +220,9 @@ async function main() {
   // when HEARTBEAT=1 forces a "scan healthy" status (one scheduled run a day
   // sets it so a silent week is distinguishable from a broken pipeline).
   if (DRY) {
-    await sendDiscord(null, { arbs: fresh, summary });
-  } else if (fresh.length || process.env.HEARTBEAT === '1') {
-    await sendDiscord(process.env.DISCORD_WEBHOOK_URL, { arbs: fresh, summary });
+    await sendDiscord(null, { arbs: fresh, summary, healthWarn: boaHealthWarn ? 'boabet' : null });
+  } else if (fresh.length || process.env.HEARTBEAT === '1' || boaHealthWarn) {
+    await sendDiscord(process.env.DISCORD_WEBHOOK_URL, { arbs: fresh, summary, healthWarn: boaHealthWarn ? 'boabet' : null });
   } else {
     console.log('No new arbs — staying silent (no Discord post).');
   }

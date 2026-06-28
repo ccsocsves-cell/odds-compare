@@ -1,10 +1,11 @@
 // Posts arb alerts, or (only when explicitly invoked with no arbs — dry-run
 // and heartbeat paths) a short status with summary + closest near-arb.
 // compare.js decides whether to call at all; routine no-arb runs stay silent.
-export async function sendDiscord(webhookUrl, { arbs, summary }) {
-  const messages = arbs.length
-    ? buildArbMessages(arbs)
-    : [buildStatusMessage(summary)];
+export async function sendDiscord(webhookUrl, { arbs, summary, healthWarn }) {
+  const messages = [];
+  if (healthWarn) messages.push(buildHealthWarning(healthWarn));
+  if (arbs.length) messages.push(...buildArbMessages(arbs));
+  else if (!healthWarn) messages.push(buildStatusMessage(summary));
 
   if (!webhookUrl) {
     console.log(`\n=== Discord output (dry-run) ===`);
@@ -102,4 +103,9 @@ function chunkLines(header, lines, maxLen) {
   }
   if (buf.trim().length) chunks.push(buf);
   return chunks;
+}
+
+function buildHealthWarning(source) {
+  const label = source === 'boabet' ? 'BoaBet' : source;
+  return `**[Health Warning] ${label} scraper: 0 events for 5+ consecutive runs.** The source may be blocked or down. Check Actions logs for errors.`;
 }

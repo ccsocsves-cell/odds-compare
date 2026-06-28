@@ -53,6 +53,7 @@ export function markSeen(arbs, seen) {
 // so the store doesn't grow forever.
 export function pruneSeen(seen, now = Date.now()) {
   for (const [k, v] of Object.entries(seen)) {
+    if (k.startsWith('_')) continue;
     if (new Date(v.startUtc).getTime() < now) delete seen[k];
   }
 }
