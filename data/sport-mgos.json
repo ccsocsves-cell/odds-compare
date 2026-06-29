@@ -1,12 +1,54 @@
 {
-  "1":  { "name": "Labdarúgás (Football)",    "mgos": [1380, 1381, 1382, 1383] },
-  "3":  { "name": "Tenisz (Tennis)",          "mgos": [2369, 2370] },
-  "6":  { "name": "Jégkorong (Hockey)",       "mgos": [559, 560, 561] },
-  "7":  { "name": "Kézilabda (Handball)",     "mgos": [565, 566] },
-  "8":  { "name": "Kosárlabda (Basketball)",  "mgos": [570, 571, 573] },
-  "9":  { "name": "Baseball",                 "mgos": [574, 575, 577] },
-  "20": { "name": "Röplabda (Volleyball)",    "mgos": [579, 580] },
-  "22": { "name": "Vízilabda (Waterpolo)",    "mgos": [582, 583, 586] },
-  "28": { "name": "Rögbi (Rugby)",            "mgos": [707, 708, 710] },
-  "49": { "name": "Futsal",                   "mgos": [697, 698] }
+  "1": {
+    "name": "Labdarúgás (Football)",
+    "mgos": [
+      "1380",
+      "1381",
+      "1382",
+      "1383",
+      "1384",
+      "1385",
+      "1386",
+      "1387",
+      "1388",
+      "1389",
+      "1390"
+    ]
+  },
+  "3": {
+    "name": "Tenisz (Tennis)",
+    "mgos": []
+  },
+  "6": {
+    "name": "Jégkorong (Hockey)",
+    "mgos": []
+  },
+  "7": {
+    "name": "Kézilabda (Handball)",
+    "mgos": []
+  },
+  "8": {
+    "name": "Kosárlabda (Basketball)",
+    "mgos": []
+  },
+  "9": {
+    "name": "Baseball",
+    "mgos": []
+  },
+  "20": {
+    "name": "Röplabda (Volleyball)",
+    "mgos": []
+  },
+  "22": {
+    "name": "Vízilabda (Waterpolo)",
+    "mgos": []
+  },
+  "28": {
+    "name": "Rögbi (Rugby)",
+    "mgos": []
+  },
+  "49": {
+    "name": "Futsal",
+    "mgos": []
+  }
 }
